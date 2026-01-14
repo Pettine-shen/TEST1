@@ -1,0 +1,5 @@
+---
+globs: *.lua,*.cs
+alwaysApply: false
+---
+修改函数时确保函数不要超过50行

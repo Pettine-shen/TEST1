@@ -1,0 +1,5 @@
+---
+globs: *.md,*.cs
+alwaysApply: false
+---
+需要在文档或注释中使用日期时，先取一下系统当前日期

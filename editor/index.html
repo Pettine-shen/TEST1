@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PVE ECA 顺序重排 Demo</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Arial, sans-serif; margin: 0; background:#0b1020; color:#e8ecff; }
+      .wrap { display: grid; grid-template-columns: 420px 1fr; height: 100vh; }
+      .panel { padding: 14px; border-right: 1px solid rgba(255,255,255,0.08); overflow:auto; }
+      .game { position: relative; }
+      canvas { width: 100%; height: 100%; display:block; background: radial-gradient(1000px 600px at 30% 30%, rgba(120,140,255,0.12), transparent 55%), #070a14; }
+      h2 { margin: 0 0 10px; font-size: 16px; }
+      .row { display:flex; gap:10px; align-items:center; margin: 8px 0; flex-wrap:wrap; }
+      select, button, input { background:#121a33; color:#e8ecff; border:1px solid rgba(255,255,255,0.14); border-radius:8px; padding:8px 10px; }
+      button { cursor:pointer; }
+      button.primary { background:#2a3cff; border-color:#2a3cff; }
+      button.danger { background:#a41d3a; border-color:#a41d3a; }
+      .slot { border:1px solid rgba(255,255,255,0.12); border-radius:10px; padding:10px; margin:10px 0; background: rgba(255,255,255,0.04); }
+      .slotTitle { display:flex; justify-content:space-between; align-items:center; gap:10px; }
+      .muted { opacity:0.8; font-size:12px; }
+      pre { background:#0c1228; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px; overflow:auto; max-height: 220px; }
+      .hud { position:absolute; left:12px; top:12px; background: rgba(10,14,30,0.7); border:1px solid rgba(255,255,255,0.10); border-radius:12px; padding:10px; }
+      .hud b { color:#fff; }
+      .hint { font-size:12px; opacity:0.8; margin-top:6px; line-height:1.4; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="panel">
+        <h2>技能组装（仅支持顺序重排+档位切换）</h2>
+        <div class="row">
+          <label class="muted">模板</label>
+          <select id="templateSelect"></select>
+        </div>
+        <div class="row">
+          <button id="applyBtn" class="primary">应用到战斗</button>
+          <button id="resetBtn">重置为默认</button>
+          <button id="spawnBtn">刷新怪物</button>
+          <button id="pauseBtn">暂停</button>
+        </div>
+        <div class="hint">
+          玩法说明：你可以把“减速/伤害/延迟/目标选择”等槽位上下移动，或切换档位。<br/>
+          顺序会影响命中与收益（例如先选目标再判距离 vs 先判资源再延迟）。<br/>
+          当前是 PVE 验证版：怪物有简单 AI、掉落材料。
+        </div>
+
+        <div id="slots"></div>
+
+        <h2 style="margin-top:14px;">导出（Assembly）</h2>
+        <pre id="exportOut">(点击“应用到战斗”后生成)</pre>
+      </div>
+
+      <div class="game">
+        <canvas id="c"></canvas>
+        <div class="hud">
+          <div>玩家HP：<b id="hp">-</b></div>
+          <div>怪物数：<b id="mon">-</b></div>
+          <div>掉落：<b id="drops">-</b></div>
+          <div class="hint">WASD 移动，鼠标瞄准，左键施法（CastConfirm）<br/>按下“刷新怪物”可重新开局</div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./play.js"></script>
+  </body>
+</html>

@@ -1,0 +1,5 @@
+---
+description: 生成文档时
+alwaysApply: false
+---
+生成文档时都使用markdown格式，画图尽量使用mermaid格式，生成的文档放到docs目录下

@@ -1,0 +1,11 @@
+{
+  "name": "pve-eca-reorder-mvp",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Single-player PVE ECA reorderable-skill prototype with lightweight editor and simulator.",
+  "scripts": {
+    "dev": "cmd /d /s /c \"\"%ProgramFiles%\\nodejs\\node.exe\" server.js\"",
+    "sim": "cmd /d /s /c \"\"%ProgramFiles%\\nodejs\\node.exe\" sim\\simulation.js\"",
+    "test": "cmd /d /s /c \"\"%ProgramFiles%\\nodejs\\node.exe\" tests\\run-tests.js\""
+  }
+}
