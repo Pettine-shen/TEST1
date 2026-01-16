@@ -1,127 +1,656 @@
 /**
  * 随机武器生成器
  * 每次体验时生成随机的技能 Assembly
+ * 使用动态 ECA 规则系统替代固定模板
  */
 
 import { compileAssembly } from "./runtime.js";
 import { createRng } from "./rng.js";
 import { generateSkillDescription } from "./skillDescription.js";
 import { generateRandomPresentationParams } from "./presentationParams.js";
-import { selectTierByWeight, filterTemplatesByTier, getTemplateTier } from "./templateTiers.js";
 import { checkSynergy, checkAllSynergies, extractEffectIds } from "./synergy.js";
+import { checkCouplingRequirement, extractEffectIdsForCoupling, getRecommendedCouplingEffects } from "./coupling.js";
+import { 
+  EVENT_RULES, 
+  CONDITION_RULES, 
+  TARGET_RULES, 
+  ACTION_RULES, 
+  TIMELINE_RULES, 
+  STRUCTURE_RULES,
+  COMPLEXITY_CONFIG,
+  hasDamageTag
+} from "../configs/ecaRules.js";
+import {
+  CORE_SKILLS,
+  SUPPORT_MODIFIERS,
+  isCompatible,
+  applySupportModifier
+} from "../configs/skillArchetypes.js";
 
 // 记录最近生成的武器（用于避免重复）
 let recentWeapons = [];
-const MAX_RECENT_WEAPONS = 20;
+const MAX_RECENT_WEAPONS = 50; // 增加到50个，提高重复检测能力
 
 /**
- * 生成随机武器
- * @param {Array} templates - 所有可用模板
+ * 动态生成技能模板结构（主效果+副效果架构）
+ * @param {Function} rng - 随机数生成器
+ * @param {Object} complexityConfig - 复杂度配置（可选，默认使用 COMPLEXITY_CONFIG）
+ * @returns {Object} 动态生成的模板对象
+ */
+function generateDynamicTemplate(rng, complexityConfig = null) {
+  const complexity = complexityConfig || COMPLEXITY_CONFIG;
+  
+  // 1. 选择事件
+  const eventRule = selectWeighted(EVENT_RULES, rng, (rule) => rule.weight || 1.0);
+  
+  // 2. 选择主效果（Core Skill）
+  const coreSkill = selectWeighted(CORE_SKILLS, rng, (skill) => skill.weight || 1.0);
+  console.log(`Selected core skill: ${coreSkill.label} (${coreSkill.category})`);
+  
+  // 3. 选择副效果（Support Modifiers）- 根据复杂度调整数量
+  // 基础最大副效果数：根据overall复杂度确定
+  let baseMaxSupports = 1;
+  if (complexity.overall > 0.7) {
+    baseMaxSupports = 3;
+  } else if (complexity.overall > 0.4) {
+    baseMaxSupports = 2;
+  }
+  
+  // 应用副效果数量系数
+  const supportConfig = complexity.supportModifierCount || { min: 0.3, max: 0.9 };
+  const adjustedMaxSupports = Math.max(1, Math.floor(baseMaxSupports * supportConfig.max));
+  
+  // 计算实际副效果数量：至少有一定概率有副效果
+  let supportCount = 0;
+  const minSupportChance = supportConfig.min || 0.3;
+  if (rng() < minSupportChance) {
+    // 至少1个副效果
+    supportCount = 1 + Math.floor(rng() * adjustedMaxSupports);
+  } else {
+    // 可能0个，也可能更多
+    supportCount = Math.floor(rng() * (adjustedMaxSupports + 1));
+  }
+  
+  supportCount = Math.min(supportCount, adjustedMaxSupports); // 确保不超过最大值
+  
+  const selectedSupports = [];
+  const availableSupports = SUPPORT_MODIFIERS.filter(support => 
+    isCompatible(support, coreSkill)
+  );
+  
+  // 加权随机选择副效果
+  const highRiskConfig = complexity.highRiskHighRewardWeight || { enabled: true, weightMultiplier: 0.6 };
+  
+  for (let i = 0; i < supportCount && availableSupports.length > 0; i++) {
+    // 计算权重：高风险高回报副效果根据配置调整权重
+    const weights = availableSupports.map(s => {
+      let weight = s.weight || 1.0;
+      
+      // 如果是高风险高回报类别，应用权重倍数
+      if (highRiskConfig.enabled && s.category === "high_risk") {
+        weight *= (highRiskConfig.weightMultiplier || 0.6);
+      }
+      
+      return weight;
+    });
+    
+    const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+    if (totalWeight <= 0) break; // 如果所有权重为0，停止选择
+    
+    let random = rng() * totalWeight;
+    
+    let selectedIndex = 0;
+    for (let j = 0; j < availableSupports.length; j++) {
+      random -= weights[j];
+      if (random <= 0) {
+        selectedIndex = j;
+        break;
+      }
+    }
+    
+    const selectedSupport = availableSupports[selectedIndex];
+    selectedSupports.push(selectedSupport);
+    availableSupports.splice(selectedIndex, 1); // 移除已选择的，避免重复
+    console.log(`Selected support modifier: ${selectedSupport.label} (category: ${selectedSupport.category})`);
+  }
+  
+  // 4. 应用副效果到主效果
+  let modifiedAction = coreSkill.baseAction;
+  const appliedNegativeEffects = [];
+  
+  for (const support of selectedSupports) {
+    modifiedAction = applySupportModifier(modifiedAction, support);
+    
+    // 收集负面效果
+    if (support.negativeEffects && support.negativeEffects.length > 0) {
+      appliedNegativeEffects.push(...support.negativeEffects);
+    }
+  }
+  
+  // 5. 根据复杂度确定槽位数量（简化：主效果+副效果已经确定了动作）
+  const { minSlots, maxSlots } = STRUCTURE_RULES.getSlotRange(complexity);
+  const slotCount = Math.max(minSlots, Math.min(maxSlots, 3 + supportCount)); // 至少3个槽位（事件+主效果+目标/条件）
+  
+  // 6. 确定各类型槽位数量（根据复杂度配置）
+  const actionCount = 1; // 主效果动作（副效果已经应用到主效果中）
+  
+  // 根据复杂度配置计算条件数量
+  const [conditionMin, conditionMax] = STRUCTURE_RULES.getConditionRange(complexity);
+  const conditionCount = Math.floor(rng() * (conditionMax - conditionMin + 1)) + conditionMin;
+  
+  // 根据复杂度配置计算目标数量
+  const [targetMin, targetMax] = STRUCTURE_RULES.getTargetRange(complexity);
+  let targetCount = coreSkill.category === "projectile" || coreSkill.category === "beam" ? 1 : 0; // 投射类需要目标
+  if (targetMax > 0 && rng() < 0.5) {
+    // 50%概率添加额外目标选择
+    targetCount = Math.min(targetMax, targetCount + Math.floor(rng() * (targetMax - targetMin + 1)) + targetMin);
+  }
+  
+  // 根据复杂度配置计算时间线数量
+  const [timelineMin, timelineMax] = STRUCTURE_RULES.getTimelineRange(complexity);
+  const timelineCount = Math.floor(rng() * (timelineMax - timelineMin + 1)) + timelineMin;
+  
+  // 4. 应用约束规则
+  const slots = [];
+  let slotIdCounter = 1;
+  
+  // 添加事件（事件不占用槽位，但影响预算和守卫）
+  
+  // 添加条件槽位
+  for (let i = 0; i < conditionCount; i++) {
+    slots.push({
+      id: `c${slotIdCounter++}`,
+      type: "Condition",
+      options: CONDITION_RULES.map(rule => ({
+        id: rule.id,
+        kind: rule.kind,
+        ...rule,
+      })),
+      defaultOption: CONDITION_RULES[0].id,
+    });
+  }
+  
+  // 添加目标槽位
+  for (let i = 0; i < targetCount; i++) {
+    slots.push({
+      id: `t${slotIdCounter++}`,
+      type: "Target",
+      options: TARGET_RULES.map(rule => ({
+        id: rule.id,
+        kind: rule.kind,
+        ...rule,
+      })),
+      defaultOption: TARGET_RULES[0].id,
+    });
+  }
+  
+  // 添加主效果动作槽位（使用修改后的主效果）
+  const mainActionId = `core_${coreSkill.id}_${Date.now()}`;
+  slots.push({
+    id: `a${slotIdCounter++}`,
+    type: "Action",
+    options: [{
+      id: mainActionId,
+      label: coreSkill.label,
+      ...modifiedAction,
+      _coreSkill: coreSkill.id,
+      _supportModifiers: selectedSupports.map(s => s.id),
+    }],
+    defaultOption: mainActionId,
+  });
+  
+  // 如果有负面效果，添加为Debuff动作（负面效果会在运行时应用到玩家身上）
+  if (appliedNegativeEffects.length > 0) {
+    for (const negativeEffect of appliedNegativeEffects) {
+      slots.push({
+        id: `a${slotIdCounter++}`,
+        type: "Action",
+        options: [{
+          id: `negative_${negativeEffect.kind}_${Date.now()}`,
+          label: `负面：${getDebuffLabel(negativeEffect.kind)}`,
+          kind: "SelfDebuff",
+          debuff: negativeEffect,
+          budget: {},
+          _isNegativeEffect: true,
+        }],
+        defaultOption: `negative_${negativeEffect.kind}_${Date.now()}`,
+      });
+    }
+  }
+  
+  // 如果有副效果添加了额外的Debuff，也添加
+  for (const support of selectedSupports) {
+    if (support.effects.additionalDebuff) {
+      slots.push({
+        id: `a${slotIdCounter++}`,
+        type: "Action",
+        options: [{
+          id: `support_debuff_${support.id}_${Date.now()}`,
+          label: support.label,
+          kind: "Debuff",
+          debuff: support.effects.additionalDebuff,
+          budget: support.budget || {},
+        }],
+        defaultOption: `support_debuff_${support.id}_${Date.now()}`,
+      });
+    }
+  }
+  
+  // 添加时间线槽位
+  for (let i = 0; i < timelineCount; i++) {
+    slots.push({
+      id: `tl${slotIdCounter++}`,
+      type: "Timeline",
+      options: TIMELINE_RULES.map(rule => ({
+        id: rule.id,
+        delayMs: rule.delayMs,
+        ...rule,
+      })),
+      defaultOption: TIMELINE_RULES[0].id,
+    });
+  }
+  
+  // 5. 应用约束规则（后处理）
+  const selectedActionKinds = new Set();
+  const hasOnDamaged = eventRule.id === "OnDamaged";
+  
+  // 检查是否需要添加触发概率条件
+  if (hasOnDamaged) {
+    const hasProcChance = slots.some(s => 
+      s.type === "Condition" && s.options.some(o => o.kind === "ProcChance")
+    );
+    if (!hasProcChance) {
+      // 添加一个触发概率条件
+      slots.unshift({
+        id: `c${slotIdCounter++}`,
+        type: "Condition",
+        options: CONDITION_RULES.filter(r => r.kind === "ProcChance").map(rule => ({
+          id: rule.id,
+          kind: rule.kind,
+          ...rule,
+        })),
+        defaultOption: CONDITION_RULES.find(r => r.kind === "ProcChance")?.id || CONDITION_RULES[0].id,
+      });
+    }
+  }
+  
+  // 检查是否需要添加目标选择（如果有投射物动作）
+  const hasProjectileAction = slots.some(s => 
+    s.type === "Action" && s.options.some(o => 
+      ["SpawnProjectile", "SpawnMultipleProjectiles", "SpawnBurstProjectiles", "SpawnProjectileWithExplosion"].includes(o.kind)
+    )
+  );
+  const currentTargetCount = slots.filter(s => s.type === "Target").length;
+  if (hasProjectileAction && currentTargetCount === 0 && rng() < 0.7) {
+    slots.splice(1, 0, {
+      id: `t${slotIdCounter++}`,
+      type: "Target",
+      options: TARGET_RULES.map(rule => ({
+        id: rule.id,
+        kind: rule.kind,
+        ...rule,
+      })),
+      defaultOption: TARGET_RULES[0].id,
+    });
+  }
+  
+  // 6. 确保至少有一个伤害动作（伤害tag规则）
+  const hasDamageAction = slots.some(s => 
+    s.type === "Action" && s.options.some(o => hasDamageTag(o))
+  );
+  
+  if (!hasDamageAction) {
+    // 找到所有有伤害的动作
+    const damageActions = ACTION_RULES.filter(rule => hasDamageTag(rule));
+    
+    if (damageActions.length > 0) {
+      // 随机选择一个伤害动作，添加到第一个动作槽位
+      const selectedDamageAction = damageActions[Math.floor(rng() * damageActions.length)];
+      
+      // 找到第一个动作槽位，如果没有则创建一个
+      const firstActionSlot = slots.find(s => s.type === "Action");
+      
+      if (firstActionSlot) {
+        // 将伤害动作添加到选项列表的开头，并设置为默认选项
+        firstActionSlot.options.unshift({
+          id: selectedDamageAction.id,
+          kind: selectedDamageAction.kind,
+          ...selectedDamageAction,
+        });
+        firstActionSlot.defaultOption = selectedDamageAction.id;
+      } else {
+        // 如果没有动作槽位，创建一个
+        slots.push({
+          id: `a${slotIdCounter++}`,
+          type: "Action",
+          options: [{
+            id: selectedDamageAction.id,
+            kind: selectedDamageAction.kind,
+            ...selectedDamageAction,
+          }],
+          defaultOption: selectedDamageAction.id,
+        });
+      }
+      
+      console.log(`Added damage action ${selectedDamageAction.id} to ensure skill has at least one damage tag`);
+    }
+  }
+  
+  // 7. 生成模板对象
+  const templateId = `dynamic_${Date.now()}_${Math.floor(rng() * 10000)}`;
+  return {
+    id: templateId,
+    slots,
+    budgetCap: eventRule.budgetCap || { damage: 140, cc: 60, mobility: 0, proc: 40, perf: 50 },
+    guards: eventRule.guards || {},
+    event: eventRule.id,
+    _coreSkill: coreSkill.id,
+    _supportModifiers: selectedSupports.map(s => s.id),
+    _negativeEffects: appliedNegativeEffects,
+  };
+}
+
+/**
+ * 获取debuff的中文标签
+ */
+function getDebuffLabel(kind) {
+  const labelMap = {
+    selfSlow: "自身减速",
+    selfVuln: "自身易伤",
+    selfRoot: "自身定身",
+  };
+  return labelMap[kind] || kind;
+}
+
+/**
+ * 加权随机选择
+ * @param {Array} items - 选项数组
+ * @param {Function} rng - 随机数生成器
+ * @param {Function} weightFn - 权重函数
+ * @returns {Object} 选中的项
+ */
+function selectWeighted(items, rng, weightFn) {
+  if (!items || items.length === 0) {
+    throw new Error("No items available");
+  }
+  if (items.length === 1) {
+    return items[0];
+  }
+  
+  const weights = items.map(item => weightFn(item));
+  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+  if (totalWeight <= 0) {
+    return items[Math.floor(rng() * items.length)];
+  }
+  
+  let random = rng() * totalWeight;
+  for (let i = 0; i < items.length; i++) {
+    random -= weights[i];
+    if (random <= 0) {
+      return items[i];
+    }
+  }
+  return items[items.length - 1];
+}
+
+/**
+ * 计算模板的基础组合数（用于多样性评分）
+ * @param {Object} template - 模板对象
+ * @returns {number} 基础组合数
+ */
+function calculateTemplateCombinations(template) {
+  const slotCounts = template.slots.map(slot => slot.options.length);
+  return slotCounts.reduce((product, count) => product * count, 1);
+}
+
+/**
+ * 根据组合数计算多样性权重（组合数越多，权重越高）
+ * @param {number} combinations - 基础组合数
+ * @returns {number} 多样性权重（0-1）
+ */
+function getDiversityWeight(combinations) {
+  if (combinations >= 100000) return 1.0;      // 极高多样性，正常权重
+  if (combinations >= 10000) return 0.9;       // 高多样性，略降权重
+  if (combinations >= 1000) return 0.7;        // 中等多样性，降低权重
+  if (combinations >= 100) return 0.4;         // 低多样性，大幅降低权重
+  if (combinations >= 10) return 0.2;          // 极低多样性，极低权重
+  return 0.1;                                  // 几乎固定，极低权重
+}
+
+/**
+ * 生成随机武器（动态生成版本）
+ * @param {Array} templates - 已废弃，保留以兼容旧代码
  * @param {number|Object} seed - 随机种子（数字或 RNG 对象）
  * @returns {Object} 随机生成的 Assembly 对象，包含 templateId, order, slotOptions, description, isRandom
  */
 export function generateRandomWeapon(templates, seed) {
-  if (!templates || templates.length === 0) {
-    throw new Error("No templates available");
-  }
-
   // 使用更好的随机种子：时间戳 + 随机数 + 计数器
   const baseSeed = typeof seed === "number" ? seed : Date.now();
   const enhancedSeed = baseSeed + Math.floor(Math.random() * 1000000) + recentWeapons.length;
   const rng = typeof seed === "object" ? seed : createRng(enhancedSeed);
 
   let attempts = 0;
-  const maxAttempts = 50; // 最多尝试50次以避免无限循环
+  const maxAttempts = 100; // 增加尝试次数
   
   while (attempts < maxAttempts) {
     attempts++;
     
-    // 1. 根据分级权重选择模板分级（简单70%，普通25%，复杂5%）
-    const selectedTier = selectTierByWeight(rng);
-    const tierTemplates = filterTemplatesByTier(templates, selectedTier);
-    
-    // 如果该分级没有模板，降级到简单模板
-    const availableTemplates = tierTemplates.length > 0 ? tierTemplates : filterTemplatesByTier(templates, "simple");
-    
-    // 识别单选项模板（缺乏多样性的模板）
-    const singleOptionTemplates = availableTemplates.filter(t => {
-      const singleOptionSlots = t.slots.filter(s => s.options.length === 1);
-      const singleOptionRatio = singleOptionSlots.length / t.slots.length;
-      return singleOptionRatio >= 0.4 || singleOptionSlots.length >= 1;
-    });
-    
-    // 进一步识别极度缺乏多样性的模板
-    const veryLowDiversityTemplates = availableTemplates.filter(t => {
-      const singleOptionSlots = t.slots.filter(s => s.options.length === 1);
-      const singleOptionRatio = singleOptionSlots.length / t.slots.length;
-      return singleOptionRatio >= 0.6;
-    });
-    
-    const multiOptionTemplates = availableTemplates.filter(t => !singleOptionTemplates.includes(t));
-    
-    let templateIndex;
-    if (recentWeapons.length > 0) {
-      const lastTemplateId = recentWeapons[recentWeapons.length - 1]?.templateId;
-      const lastTemplate = templates.find(t => t.id === lastTemplateId);
-      const isLastVeryLowDiversity = lastTemplate && veryLowDiversityTemplates.includes(lastTemplate);
-      
-      // 如果上次是极度缺乏多样性的模板，这次优先选择多选项模板
-      if (isLastVeryLowDiversity && multiOptionTemplates.length > 0 && rng() < 0.9) {
-        templateIndex = templates.indexOf(multiOptionTemplates[Math.floor(rng() * multiOptionTemplates.length)]);
-      } else {
-        // 正常随机，优先多选项模板
-        if (multiOptionTemplates.length > 0 && rng() < 0.8) {
-          templateIndex = templates.indexOf(multiOptionTemplates[Math.floor(rng() * multiOptionTemplates.length)]);
-        } else {
-          const fallbackTemplates = availableTemplates.filter(t => !veryLowDiversityTemplates.includes(t));
-          if (fallbackTemplates.length > 0) {
-            templateIndex = templates.indexOf(fallbackTemplates[Math.floor(rng() * fallbackTemplates.length)]);
-          } else {
-            templateIndex = templates.indexOf(availableTemplates[Math.floor(rng() * availableTemplates.length)]);
-          }
-        }
-        // 避免连续选择相同模板
-        const lastTemplateIndex = templates.findIndex(t => t.id === lastTemplateId);
-        if (lastTemplateIndex === templateIndex && templates.length > 1) {
-          const otherTemplates = availableTemplates.filter((t, i) => templates.indexOf(t) !== lastTemplateIndex && !veryLowDiversityTemplates.includes(t));
-          if (otherTemplates.length > 0) {
-            const otherIndex = Math.floor(rng() * otherTemplates.length);
-            templateIndex = templates.indexOf(otherTemplates[otherIndex]);
-          }
-        }
-      }
-    } else {
-      // 第一次生成：从选定的分级中选择
-      if (multiOptionTemplates.length > 0 && rng() < 0.8) {
-        templateIndex = templates.indexOf(multiOptionTemplates[Math.floor(rng() * multiOptionTemplates.length)]);
-      } else {
-        const fallbackTemplates = availableTemplates.filter(t => !veryLowDiversityTemplates.includes(t));
-        if (fallbackTemplates.length > 0) {
-          templateIndex = templates.indexOf(fallbackTemplates[Math.floor(rng() * fallbackTemplates.length)]);
-        } else {
-          templateIndex = templates.indexOf(availableTemplates[Math.floor(rng() * availableTemplates.length)]);
-        }
-      }
-    }
-    
-    const template = templates[templateIndex];
+    // 1. 动态生成模板结构
+    const template = generateDynamicTemplate(rng);
 
     // 2. 随机重排顺序（确保真正的随机）
     const order = [...template.slots.map((s) => s.id)];
     shuffleArray(order, rng);
 
-    // 3. 加权随机选择档位（考虑效果组合协同收益）
+    // 3. 选项选择：大幅提高随机性，减少权重影响
     const slotOptions = {};
-    const selectedEffects = []; // 记录已选择的效果ID，用于检查协同
     
+    // 70%概率完全随机选择，30%概率使用轻微加权（避免最差的选项）
+    const usePureRandom = rng() < 0.7;
+    
+    // 记录已选择的效果，用于耦合关系检查
+    const selectedEffects = [];
+    
+    // 第一遍：选择所有选项
     for (const slot of template.slots) {
-      // 使用加权随机，但考虑与已选效果的协同收益
-      const option = selectWeightedOptionWithSynergy(slot.options, selectedEffects, rng);
+      let option;
+      if (usePureRandom && slot.options.length > 1) {
+        // 完全随机选择（最大化多样性）
+        option = slot.options[Math.floor(rng() * slot.options.length)];
+      } else {
+        // 轻微加权：只降低最基础的选项权重
+        const weights = slot.options.map(opt => {
+          const optId = opt.id || "";
+          // 基础选项稍微降低权重
+          if (optId.includes("proj_fast") || optId.includes("dmg_mid") || 
+              optId.includes("slow_light") || optId === "mana30" || optId === "range12") {
+            return 0.7;
+          }
+          return 1.0;
+        });
+        const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+        let random = rng() * totalWeight;
+        for (let i = 0; i < slot.options.length; i++) {
+          random -= weights[i];
+          if (random <= 0) {
+            option = slot.options[i];
+            break;
+          }
+        }
+        if (!option) {
+          option = slot.options[Math.floor(rng() * slot.options.length)];
+        }
+      }
+      
       slotOptions[slot.id] = option.id;
       
-      // 提取效果ID并添加到已选效果列表
-      const effectIds = extractEffectIds(option);
-      selectedEffects.push(...effectIds);
+      // 提取当前选项的效果ID
+      const currentEffectIds = extractEffectIdsForCoupling(option);
+      selectedEffects.push(...currentEffectIds);
+    }
+    
+    // 第二遍：检查耦合关系，尝试调整选项以满足依赖
+    // 重新构建selectedEffects数组（确保完整）
+    const allSelectedEffects = [];
+    for (const slot of template.slots) {
+      const optionId = slotOptions[slot.id];
+      const option = slot.options.find(opt => opt.id === optionId);
+      if (option) {
+        const effectIds = extractEffectIdsForCoupling(option);
+        allSelectedEffects.push(...effectIds);
+      }
+    }
+    
+    // 检查是否至少有一个伤害动作（伤害tag规则）
+    const hasDamageInSelected = template.slots.some(slot => {
+      if (slot.type !== "Action") return false;
+      const optionId = slotOptions[slot.id];
+      const option = slot.options.find(opt => opt.id === optionId);
+      return option && hasDamageTag(option);
+    });
+    
+    if (!hasDamageInSelected) {
+      // 找到所有动作槽位中有伤害的选项
+      const actionSlots = template.slots.filter(s => s.type === "Action");
+      const damageOptions = [];
+      
+      for (const actionSlot of actionSlots) {
+        const damageOpts = actionSlot.options.filter(opt => hasDamageTag(opt));
+        if (damageOpts.length > 0) {
+          damageOptions.push({ slot: actionSlot, options: damageOpts });
+        }
+      }
+      
+      if (damageOptions.length > 0) {
+        // 随机选择一个动作槽位，将其选项替换为伤害选项
+        const selected = damageOptions[Math.floor(rng() * damageOptions.length)];
+        const selectedOption = selected.options[Math.floor(rng() * selected.options.length)];
+        slotOptions[selected.slot.id] = selectedOption.id;
+        console.log(`Replaced action ${selected.slot.id} with damage action ${selectedOption.id} to ensure skill has damage tag`);
+      } else {
+        // 如果动作槽位中没有伤害选项，添加一个伤害动作到第一个动作槽位
+        const damageActions = ACTION_RULES.filter(rule => hasDamageTag(rule));
+        if (damageActions.length > 0 && actionSlots.length > 0) {
+          const selectedDamageAction = damageActions[Math.floor(rng() * damageActions.length)];
+          const firstActionSlot = actionSlots[0];
+          
+          // 检查第一个动作槽位是否已经有这个选项，如果没有则添加
+          const hasOption = firstActionSlot.options.some(opt => opt.id === selectedDamageAction.id);
+          if (!hasOption) {
+            firstActionSlot.options.push({
+              id: selectedDamageAction.id,
+              kind: selectedDamageAction.kind,
+              ...selectedDamageAction,
+            });
+          }
+          slotOptions[firstActionSlot.id] = selectedDamageAction.id;
+          console.log(`Set first action slot ${firstActionSlot.id} to damage action ${selectedDamageAction.id}`);
+        }
+      }
+    }
+    
+    const couplingAdjustments = [];
+    for (let i = 0; i < template.slots.length; i++) {
+      const slot = template.slots[i];
+      const currentOptionId = slotOptions[slot.id];
+      const currentOption = slot.options.find(opt => opt.id === currentOptionId);
+      if (!currentOption) continue;
+      
+      const currentEffectIds = extractEffectIdsForCoupling(currentOption);
+      
+      // 检查当前选项是否需要依赖效果
+      for (const effectId of currentEffectIds) {
+        const couplingRelation = checkCouplingRequirement(allSelectedEffects, effectId);
+        if (couplingRelation && rng() < couplingRelation.weight) {
+          // 根据权重决定是否补充依赖效果
+          const recommendedEffects = getRecommendedCouplingEffects(allSelectedEffects, effectId);
+          
+          // 尝试在后续的Action槽位中寻找匹配的依赖效果
+          for (let j = i + 1; j < template.slots.length; j++) {
+            const nextSlot = template.slots[j];
+            if (nextSlot.type !== "Action") continue; // 只在Action槽位中寻找
+            
+            const nextOptionId = slotOptions[nextSlot.id];
+            const nextOption = nextSlot.options.find(opt => opt.id === nextOptionId);
+            if (!nextOption) continue;
+            
+            const nextEffectIds = extractEffectIdsForCoupling(nextOption);
+            
+            // 检查是否已经包含依赖效果
+            const hasRequired = recommendedEffects.some(rec => 
+              nextEffectIds.some(eid => 
+                eid.toLowerCase() === rec.effectId.toLowerCase() ||
+                eid.toLowerCase().includes(rec.effectId.toLowerCase()) ||
+                rec.effectId.toLowerCase().includes(eid.toLowerCase())
+              )
+            );
+            
+            if (hasRequired) {
+              // 已经满足依赖，跳过
+              break;
+            }
+            
+            // 查找包含依赖效果的选项
+            const matchingOptions = nextSlot.options.filter(opt => {
+              const optEffectIds = extractEffectIdsForCoupling(opt);
+              return recommendedEffects.some(rec => 
+                optEffectIds.some(eid => 
+                  eid.toLowerCase() === rec.effectId.toLowerCase() ||
+                  eid.toLowerCase().includes(rec.effectId.toLowerCase()) ||
+                  rec.effectId.toLowerCase().includes(eid.toLowerCase())
+                )
+              );
+            });
+            
+            if (matchingOptions.length > 0) {
+              // 如果找到匹配的选项，替换当前选项以满足耦合关系
+              const selectedCouplingOption = matchingOptions[Math.floor(rng() * matchingOptions.length)];
+              
+              // 移除旧效果，添加新效果
+              const oldEffectIds = extractEffectIdsForCoupling(nextOption);
+              oldEffectIds.forEach(eid => {
+                const index = allSelectedEffects.indexOf(eid);
+                if (index > -1) allSelectedEffects.splice(index, 1);
+              });
+              
+              slotOptions[nextSlot.id] = selectedCouplingOption.id;
+              
+              const newEffectIds = extractEffectIdsForCoupling(selectedCouplingOption);
+              allSelectedEffects.push(...newEffectIds);
+              
+              couplingAdjustments.push({
+                from: effectId,
+                to: recommendedEffects.map(r => r.effectId).join(", "),
+                slot: nextSlot.id,
+                option: selectedCouplingOption.id,
+              });
+              
+              console.log(`Applied coupling: ${effectId} requires ${recommendedEffects.map(r => r.effectId).join(", ")}, adjusted ${nextSlot.id} to ${selectedCouplingOption.id}`);
+              break; // 找到一个依赖效果即可
+            }
+          }
+        }
+      }
+    }
+    
+    if (couplingAdjustments.length > 0) {
+      console.log(`Applied ${couplingAdjustments.length} coupling adjustments`);
+    }
+    
+    // 检查选项组合是否重复（动态生成系统，检查最近生成的武器）
+    const currentComboKey = Object.values(slotOptions).sort().join("|");
+    const recentOptionCombos = new Set();
+    for (const weapon of recentWeapons.slice(-MAX_RECENT_WEAPONS)) {
+      if (weapon.slotOptions) {
+        const comboKey = Object.values(weapon.slotOptions).sort().join("|");
+        recentOptionCombos.add(comboKey);
+      }
+    }
+    
+    if (recentOptionCombos.has(currentComboKey) && attempts < maxAttempts - 30) {
+      // 如果选项组合重复，重新生成
+      console.log(`Skipping duplicate option combination: ${currentComboKey}`);
+      continue;
     }
 
     // 4. 在编译前应用表现参数波动（40%波动范围，提供更大的变化）
@@ -158,21 +687,20 @@ export function generateRandomWeapon(templates, seed) {
       })),
     };
 
-    // 5. 应用效果组合协同收益（增加预算上限）
-    const allSelectedEffects = [];
+    // 5. 应用效果组合协同收益（增加预算上限）- 简化版本
+    // 重新提取效果ID用于协同收益检查（使用extractEffectIds而不是extractEffectIdsForCoupling）
+    const allSelectedEffectsForSynergy = [];
     for (const slot of modifiedTemplate.slots) {
       const optionId = slotOptions[slot.id];
       const option = slot.options.find(o => o.id === optionId);
       if (option) {
         const effectIds = extractEffectIds(option);
-        allSelectedEffects.push(...effectIds);
+        allSelectedEffectsForSynergy.push(...effectIds);
       }
     }
     
-    // 检查所有协同组合
-    const synergies = checkAllSynergies(allSelectedEffects);
-    
-    // 合并协同收益到模板的预算上限
+    // 检查所有协同组合（但不再强制应用，只是记录）
+    const synergies = checkAllSynergies(allSelectedEffectsForSynergy);
     if (synergies.length > 0) {
       const synergyBonus = synergies.reduce((acc, s) => {
         for (const [key, value] of Object.entries(s.bonus || {})) {
@@ -181,19 +709,22 @@ export function generateRandomWeapon(templates, seed) {
         return acc;
       }, {});
       
-      console.log(`Found ${synergies.length} synergies:`, synergies.map(s => s.description));
-      console.log("Synergy bonus:", synergyBonus);
-      
-      // 临时增加预算上限以容纳协同收益
-      modifiedTemplate.budgetCap = {
-        ...modifiedTemplate.budgetCap,
-        ...Object.fromEntries(
-          Object.entries(synergyBonus).map(([key, value]) => [
-            key,
-            (modifiedTemplate.budgetCap[key] || 0) + value
-          ])
-        ),
-      };
+      // 只在预算确实超限时才增加预算上限
+      try {
+        // 先尝试编译，如果失败再增加预算
+        const testAssembly = compileAssembly(modifiedTemplate, order, slotOptions);
+      } catch (e) {
+        // 预算超限，应用协同收益
+        modifiedTemplate.budgetCap = {
+          ...modifiedTemplate.budgetCap,
+          ...Object.fromEntries(
+            Object.entries(synergyBonus).map(([key, value]) => [
+              key,
+              (modifiedTemplate.budgetCap[key] || 0) + value
+            ])
+          ),
+        };
+      }
     }
 
     // 6. 编译 Assembly 并检查预算（使用修改后的模板）
@@ -205,27 +736,22 @@ export function generateRandomWeapon(templates, seed) {
       continue; // 预算超限，重新生成
     }
 
-    // 8. 检查是否与最近生成的武器重复（更严格的检查）
-    const weaponSignature = `${template.id}-${order.join("-")}-${Object.values(slotOptions).join("-")}`;
-    const isDuplicate = recentWeapons.some(w => w.signature === weaponSignature);
+    // 6. 检查是否与最近生成的武器重复（基于选项组合）
+    // 生成选项组合的哈希值（不考虑顺序）
+    const optionsSignature = Object.values(slotOptions).sort().join("|");
     
-    // 也检查选项组合的相似度（避免只有顺序不同的重复）
-    const optionsSignature = Object.values(slotOptions).sort().join("-");
-    const isSimilar = recentWeapons.some(w => {
-      const wOptionsSig = Object.values(w.slotOptions || {}).sort().join("-");
-      return wOptionsSig === optionsSignature && w.templateId === template.id;
+    const isDuplicate = recentWeapons.slice(-MAX_RECENT_WEAPONS).some(w => {
+      const wOptionsSig = Object.values(w.slotOptions || {}).sort().join("|");
+      return wOptionsSig === optionsSignature;
     });
     
-    // 对于单选项模板，更严格地避免重复（因为它们的多样性本来就低）
-    const isSingleOptionTemplate = singleOptionTemplates.includes(template);
-    const maxAvoidAttempts = isSingleOptionTemplate ? maxAttempts - 15 : maxAttempts - 10; // 单选项模板提前5次允许重复
-    
-    if ((isDuplicate || isSimilar) && attempts < maxAvoidAttempts) {
-      // 避免重复和相似，但单选项模板提前允许重复（避免无限循环）
+    // 如果选项组合重复，且尝试次数还充足，重新生成
+    if (isDuplicate && attempts < maxAttempts - 30) {
+      console.log(`Skipping duplicate option combination: ${optionsSignature}`);
       continue;
     }
 
-    // 9. 生成描述
+    // 7. 生成描述
     let description = "随机技能";
     try {
       description = generateSkillDescription(template, order, slotOptions);
@@ -233,9 +759,11 @@ export function generateRandomWeapon(templates, seed) {
       console.warn("Failed to generate skill description:", e);
     }
 
-    // 10. 记录到最近生成的武器列表
+    // 8. 记录到最近生成的武器列表
+    const weaponSignature = `${template.id}-${order.join("-")}-${Object.values(slotOptions).join("-")}`;
     const weapon = {
       templateId: template.id,
+      template, // 包含完整的模板对象
       order,
       slotOptions,
       description,
@@ -252,21 +780,20 @@ export function generateRandomWeapon(templates, seed) {
     return weapon;
   }
 
-  // 如果所有尝试都失败，返回一个基本的随机武器（仍然使用加权随机，不使用defaultOption）
+  // 如果所有尝试都失败，返回一个基本的随机武器
   console.warn("Failed to generate unique weapon after", maxAttempts, "attempts, returning basic random weapon");
-  const templateIndex = Math.floor(rng() * templates.length);
-  const template = templates[templateIndex];
+  const template = generateDynamicTemplate(rng);
   const order = [...template.slots.map((s) => s.id)];
   shuffleArray(order, rng);
   const slotOptions = {};
   for (const slot of template.slots) {
-    // 仍然使用加权随机，不使用defaultOption
-    const option = selectWeightedOption(slot.options, rng);
+    const option = slot.options[Math.floor(rng() * slot.options.length)];
     slotOptions[slot.id] = option.id;
   }
   const assembly = compileAssembly(template, order, slotOptions);
   return {
     templateId: template.id,
+    template, // 包含完整的模板对象
     order,
     slotOptions,
     description: generateSkillDescription(template, order, slotOptions),
@@ -303,8 +830,8 @@ function selectWeightedOptionWithSynergy(options, selectedEffects, rng) {
     const synergy = checkSynergy(combinedEffects);
     
     if (synergy) {
-      // 有协同收益，增加权重（最多提升50%）
-      const synergyBonus = 1.5;
+      // 有协同收益，适度增加权重（提升20%，避免过度偏向）
+      const synergyBonus = 1.2;
       weight *= synergyBonus;
       console.log(`Synergy detected for option ${opt.id}:`, synergy.description);
     }

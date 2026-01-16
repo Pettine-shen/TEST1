@@ -3,7 +3,7 @@ import { monsters as monsterProtos } from "../configs/monsters.js";
 import { dropTables } from "../configs/drops.js";
 import { compileAssembly, buildEventBusWithAssemblies } from "../engine/runtime.js";
 import { createRng, pickChance } from "../engine/rng.js";
-import { generateSkillDescription } from "../engine/skillDescription.js";
+import { generateSkillDescription, generateFullSkillDescription } from "../engine/skillDescription.js";
 import { generateRandomWeapon } from "../engine/randomWeapon.js";
 import { applyDamage, applyDebuff } from "../engine/ops.js";
 
@@ -26,6 +26,8 @@ const elDrops = document.getElementById("drops");
 const elPreviewSummary = document.getElementById("previewSummary");
 const elBudgetDisplay = document.getElementById("budgetDisplay");
 const elSkillDescription = document.getElementById("skillDescription");
+const elArtifactName = document.getElementById("artifactName");
+const elArtifactCultivation = document.getElementById("artifactCultivation");
 const elEcaVisualization = document.getElementById("ecaVisualization");
 const previewCanvas = document.getElementById("previewCanvas");
 const previewCtx = previewCanvas ? previewCanvas.getContext("2d") : null;
@@ -303,6 +305,8 @@ function updateSkillDescription() {
   if (!elSkillDescription) return;
   if (!currentTemplate || !order || !slotOptions) {
     elSkillDescription.textContent = "未知技能";
+    if (elArtifactName) elArtifactName.textContent = "(未知)";
+    if (elArtifactCultivation) elArtifactCultivation.textContent = "(未知)";
     return;
   }
   
@@ -310,9 +314,24 @@ function updateSkillDescription() {
     const description = generateSkillDescription(currentTemplate, order, slotOptions);
     elSkillDescription.textContent = description;
     elSkillDescription.style.color = isRandomWeapon ? "#ffaa00" : "#e8ecff";
+    
+    // 生成修仙风格的描述
+    if (elArtifactName && elArtifactCultivation) {
+      try {
+        const fullDesc = generateFullSkillDescription(currentTemplate, order, slotOptions);
+        elArtifactName.textContent = fullDesc.artifactName;
+        elArtifactCultivation.textContent = fullDesc.cultivation;
+      } catch (e) {
+        console.warn("Failed to generate cultivation description:", e);
+        if (elArtifactName) elArtifactName.textContent = "未知法器";
+        if (elArtifactCultivation) elArtifactCultivation.textContent = "此物功效未知。";
+      }
+    }
   } catch (e) {
     console.warn("Failed to generate skill description:", e);
     elSkillDescription.textContent = "技能描述生成失败";
+    if (elArtifactName) elArtifactName.textContent = "未知法器";
+    if (elArtifactCultivation) elArtifactCultivation.textContent = "此物功效未知。";
   }
 }
 
@@ -1180,6 +1199,16 @@ function tickOnce() {
             // Apply damage (this will add hit effects automatically)
             applyDamage(world, enemiesInArea, caster, area.tickFormula);
             
+            // Add area tick visual effect
+            world.hitEffects = world.hitEffects || [];
+            world.hitEffects.push({
+              position: { x: area.position.x, y: area.position.y },
+              damage: 0,
+              createdAt: time,
+              duration: 50,
+              type: "areaTick",
+            });
+            
             // Apply all debuffs (support both old single debuff and new debuffs array)
             const debuffsToApply = area.debuffs || (area.debuff ? [area.debuff] : []);
             const areaCaster = world.entities[area.casterId];
@@ -1215,8 +1244,8 @@ function tickOnce() {
         continue;
       }
       
-      // Update beam start position to follow caster
-      beam.start = { ...caster.position };
+      // Update beam start position to follow caster (深拷贝避免引用问题)
+      beam.start = { x: caster.position.x, y: caster.position.y };
       
       // Update beam rotation if enabled
       if (beam.canRotate && beam.rotateSpeed) {
@@ -1244,19 +1273,36 @@ function tickOnce() {
         });
         
         if (enemiesInBeam.length > 0) {
-          // Sort by distance along beam
+          // Sort by distance along beam (projection onto beam direction)
           enemiesInBeam.sort((a, b) => {
-            const distA = pointToLineDistance(a.position, beam.start, beam.end);
-            const distB = pointToLineDistance(b.position, beam.start, beam.end);
-            return distA - distB;
+            // Project enemy position onto beam direction vector
+            const dirX = beam.direction.x;
+            const dirY = beam.direction.y;
+            const aDx = a.position.x - beam.start.x;
+            const aDy = a.position.y - beam.start.y;
+            const bDx = b.position.x - beam.start.x;
+            const bDy = b.position.y - beam.start.y;
+            const aProj = aDx * dirX + aDy * dirY;
+            const bProj = bDx * dirX + bDy * dirY;
+            return aProj - bProj;
           });
           
           // Apply damage with pierce limit
+          // pierceCount < 0 means infinite pierce
           let pierced = 0;
           for (const enemy of enemiesInBeam) {
             if (beam.pierceCount >= 0 && pierced >= beam.pierceCount) break;
             applyProjectileDamage(world, [enemy], caster, beam.tickFormula, enemy.position);
             pierced++;
+            // Add hit effect for beam hits
+            world.hitEffects = world.hitEffects || [];
+            world.hitEffects.push({
+              position: { x: enemy.position.x, y: enemy.position.y },
+              damage: 0, // Damage number is shown by applyProjectileDamage
+              createdAt: time,
+              duration: 300,
+              type: "beam",
+            });
           }
           
           console.log(`Beam tick hit ${pierced} enemies`);
@@ -3250,18 +3296,19 @@ function draw() {
       if (!beam || !beam.start || !beam.end) continue;
       const startScreen = worldToScreen(beam.start);
       const endScreen = worldToScreen(beam.end);
-      const beamWidth = Math.max(beam.width * 45 * devicePixelRatio, 3 * devicePixelRatio);
+      // 确保光束宽度足够可见（至少8像素）
+      const beamWidth = Math.max(beam.width * 45 * devicePixelRatio, 8 * devicePixelRatio);
       const beamAge = time - beam.createdAt;
       const beamProgress = Math.min(beamAge / beam.duration, 1);
       const remainingLife = 1 - beamProgress;
       
       ctx2d.save();
       
-      // Outer glow (largest, most transparent)
-      ctx2d.globalAlpha = 0.4 * remainingLife;
+      // Outer glow (largest, most transparent) - 青色外圈
+      ctx2d.globalAlpha = 0.5 * remainingLife;
       ctx2d.strokeStyle = "#3ce7ff";
-      ctx2d.lineWidth = beamWidth * 3;
-      ctx2d.shadowBlur = 30 * devicePixelRatio;
+      ctx2d.lineWidth = beamWidth * 4;
+      ctx2d.shadowBlur = 40 * devicePixelRatio;
       ctx2d.shadowColor = "#3ce7ff";
       ctx2d.lineCap = "round";
       ctx2d.beginPath();
@@ -3269,35 +3316,46 @@ function draw() {
       ctx2d.lineTo(endScreen.x, endScreen.y);
       ctx2d.stroke();
       
-      // Middle glow
-      ctx2d.globalAlpha = 0.7 * remainingLife;
+      // Middle glow - 亮青色中层
+      ctx2d.globalAlpha = 0.8 * remainingLife;
       ctx2d.strokeStyle = "#5ddfff";
-      ctx2d.lineWidth = beamWidth * 2;
-      ctx2d.shadowBlur = 20 * devicePixelRatio;
+      ctx2d.lineWidth = beamWidth * 2.5;
+      ctx2d.shadowBlur = 25 * devicePixelRatio;
       ctx2d.shadowColor = "#5ddfff";
       ctx2d.beginPath();
       ctx2d.moveTo(startScreen.x, startScreen.y);
       ctx2d.lineTo(endScreen.x, endScreen.y);
       ctx2d.stroke();
       
-      // Beam core (brightest)
-      const pulse = Math.sin((time - beam.createdAt) / 100) * 0.2 + 1;
+      // Beam core (brightest white) - 白色核心，带脉冲效果
+      const pulse = Math.sin((time - beam.createdAt) / 100) * 0.15 + 1;
       ctx2d.globalAlpha = 1.0 * remainingLife * pulse;
       ctx2d.strokeStyle = "#ffffff";
-      ctx2d.lineWidth = beamWidth;
-      ctx2d.shadowBlur = 15 * devicePixelRatio;
+      ctx2d.lineWidth = beamWidth * 1.5;
+      ctx2d.shadowBlur = 20 * devicePixelRatio;
       ctx2d.shadowColor = "#ffffff";
       ctx2d.beginPath();
       ctx2d.moveTo(startScreen.x, startScreen.y);
       ctx2d.lineTo(endScreen.x, endScreen.y);
       ctx2d.stroke();
       
-      // Inner bright line
-      ctx2d.globalAlpha = 0.9 * remainingLife;
-      ctx2d.strokeStyle = "#aaffff";
-      ctx2d.lineWidth = beamWidth * 0.5;
-      ctx2d.shadowBlur = 5 * devicePixelRatio;
-      ctx2d.shadowColor = "#aaffff";
+      // Inner bright line - 最亮的内部线条
+      ctx2d.globalAlpha = 1.0 * remainingLife;
+      ctx2d.strokeStyle = "#ffffff";
+      ctx2d.lineWidth = beamWidth * 0.8;
+      ctx2d.shadowBlur = 10 * devicePixelRatio;
+      ctx2d.shadowColor = "#ffffff";
+      ctx2d.beginPath();
+      ctx2d.moveTo(startScreen.x, startScreen.y);
+      ctx2d.lineTo(endScreen.x, endScreen.y);
+      ctx2d.stroke();
+      
+      // Additional bright core line for maximum visibility - 最亮的核心线条
+      ctx2d.globalAlpha = 1.0 * remainingLife;
+      ctx2d.strokeStyle = "#ffffff";
+      ctx2d.lineWidth = beamWidth * 0.6;
+      ctx2d.shadowBlur = 15 * devicePixelRatio;
+      ctx2d.shadowColor = "#ffffff";
       ctx2d.beginPath();
       ctx2d.moveTo(startScreen.x, startScreen.y);
       ctx2d.lineTo(endScreen.x, endScreen.y);
@@ -3786,7 +3844,7 @@ if (btnRandomWeapon) {
       // 使用更好的随机种子：时间戳 + 随机数
       const seed = Date.now() + Math.floor(Math.random() * 1000000);
       const randomWeapon = generateRandomWeapon(templates, seed);
-      currentTemplate = templates.find((t) => t.id === randomWeapon.templateId) || templates[0];
+      currentTemplate = randomWeapon.template || templates.find((t) => t.id === randomWeapon.templateId) || templates[0];
       order = randomWeapon.order;
       slotOptions = randomWeapon.slotOptions;
       isRandomWeapon = true;
@@ -3824,7 +3882,7 @@ try {
   // 使用更好的随机种子：时间戳 + 随机数
   const seed = Date.now() + Math.floor(Math.random() * 1000000);
   const randomWeapon = generateRandomWeapon(templates, seed);
-  currentTemplate = templates.find((t) => t.id === randomWeapon.templateId) || templates[0];
+  currentTemplate = randomWeapon.template || templates.find((t) => t.id === randomWeapon.templateId) || templates[0];
   order = randomWeapon.order;
   slotOptions = randomWeapon.slotOptions;
   isRandomWeapon = true;

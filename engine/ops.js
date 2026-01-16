@@ -1172,6 +1172,29 @@ export function buildOp(slot, option) {
         case "Debuff":
           applyDebuff(world, targets, option.debuff, ctx.time, caster);
           return;
+        case "SelfDebuff":
+          // 负面效果：应用到施法者自身
+          const selfDebuff = option.debuff || option;
+          if (selfDebuff.kind === "selfSlow") {
+            // 自身减速
+            caster.buffs = caster.buffs || {};
+            caster.buffs.slow = {
+              power: selfDebuff.power || 0.3,
+              until: ctx.time + (selfDebuff.durationMs || 2000),
+            };
+          } else if (selfDebuff.kind === "selfVuln") {
+            // 自身易伤
+            caster.buffs = caster.buffs || {};
+            caster.buffs.vulnerable = {
+              power: selfDebuff.power || 0.2,
+              until: ctx.time + (selfDebuff.durationMs || 5000),
+            };
+          } else if (selfDebuff.kind === "selfRoot") {
+            // 自身定身
+            caster.rootedUntil = ctx.time + (selfDebuff.durationMs || 1000);
+          }
+          console.log(`Applied self debuff: ${selfDebuff.kind} to caster`);
+          return;
         case "Heal":
           // Heal targets
           const currentTime4 = world.time || ctx.time;
@@ -1446,9 +1469,20 @@ export function buildOp(slot, option) {
           const tickFormula = option.tickFormula || { scale: 0.4, flat: 15 };
           const beamPierceCount = option.pierceCount || -1;
           
+          // Calculate beam direction: prioritize targets, then aimDir
+          let beamDir = ctx.aimDir || { x: 1, y: 0 };
+          if (targets && targets.length > 0 && targets[0].position && caster.position) {
+            // Aim at first target
+            const dx = targets[0].position.x - caster.position.x;
+            const dy = targets[0].position.y - caster.position.y;
+            const dist = Math.hypot(dx, dy) || 1;
+            beamDir = { x: dx / dist, y: dy / dist };
+            console.log("Beam targeting:", targets[0].id, "direction:", beamDir);
+          }
+          
           // Calculate beam end position
-          const beamStart = caster.position;
-          const beamDir = ctx.aimDir || { x: 1, y: 0 };
+          // 深拷贝caster位置，避免引用问题
+          const beamStart = { x: caster.position.x, y: caster.position.y };
           const beamEnd = {
             x: beamStart.x + beamDir.x * beamLength,
             y: beamStart.y + beamDir.y * beamLength,
@@ -1456,8 +1490,8 @@ export function buildOp(slot, option) {
           
           const beam = {
             id: beamId,
-            start: beamStart,
-            end: beamEnd,
+            start: beamStart, // 初始位置，会在更新时跟随caster
+            end: beamEnd, // 初始结束位置，会在更新时重新计算
             direction: beamDir,
             length: beamLength,
             width: beamWidth,
@@ -1474,7 +1508,7 @@ export function buildOp(slot, option) {
             currentAngle: Math.atan2(beamDir.y, beamDir.x),
           };
           world.beams.push(beam);
-          console.log(`Beam created: length=${beamLength}, duration=${beamDuration}ms`);
+          console.log(`Beam created: length=${beamLength}, duration=${beamDuration}ms, start=(${beamStart.x.toFixed(2)}, ${beamStart.y.toFixed(2)}), end=(${beamEnd.x.toFixed(2)}, ${beamEnd.y.toFixed(2)})`);
           return;
         }
         default:

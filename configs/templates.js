@@ -407,7 +407,11 @@ export const templates = [
         id: "c1",
         type: "Condition",
         defaultOption: "range4",
-        options: [{ id: "range4", label: "近战≤4m", kind: "InRange", max: 4 }],
+        options: [
+          { id: "range4", label: "近战≤4m", kind: "InRange", max: 4 },
+          { id: "range3", label: "近战≤3m", kind: "InRange", max: 3 },
+          { id: "range5", label: "近战≤5m", kind: "InRange", max: 5, budget: { damage: 3 } },
+        ],
       },
       {
         id: "a1",
@@ -492,6 +496,9 @@ export const templates = [
         defaultOption: "pulse",
         options: [
           { id: "pulse", label: "3m脉冲", kind: "SpawnAreaDoT", tickFormula: { scale: 0.4, flat: 10 }, radius: 3, durationMs: 2000, tickIntervalMs: 500, budget: { damage: 18, perf: 6 } },
+          { id: "pulse_small", label: "2m脉冲", kind: "SpawnAreaDoT", tickFormula: { scale: 0.5, flat: 12 }, radius: 2, durationMs: 1500, tickIntervalMs: 400, budget: { damage: 15, perf: 5 } },
+          { id: "pulse_large", label: "4m脉冲", kind: "SpawnAreaDoT", tickFormula: { scale: 0.35, flat: 8 }, radius: 4, durationMs: 2500, tickIntervalMs: 600, budget: { damage: 22, perf: 8 } },
+          { id: "knockback_pulse", label: "击退脉冲", kind: "SpawnAreaDoT", tickFormula: { scale: 0.3, flat: 8 }, radius: 3, durationMs: 2000, tickIntervalMs: 500, budget: { damage: 16, perf: 6 }, debuff: { kind: "knockback", power: 1.0, durationMs: 200, moveSpeed: 4 } },
         ],
       },
       {
@@ -546,7 +553,12 @@ export const templates = [
         id: "c1",
         type: "Condition",
         defaultOption: "mana25",
-        options: [{ id: "mana25", label: "Mana≥25", kind: "HasResource", resource: "mana", amount: 25 }],
+        options: [
+          { id: "mana25", label: "Mana≥25", kind: "HasResource", resource: "mana", amount: 25 },
+          { id: "mana20", label: "Mana≥20", kind: "HasResource", resource: "mana", amount: 20 },
+          { id: "mana30", label: "Mana≥30", kind: "HasResource", resource: "mana", amount: 30, budget: { damage: 3 } },
+          { id: "hp80", label: "HP≥80%", kind: "HasResource", resource: "hp", amount: 0.8 },
+        ],
       },
       {
         id: "t1",
@@ -604,13 +616,21 @@ export const templates = [
         id: "t1",
         type: "Target",
         defaultOption: "single",
-        options: [{ id: "single", label: "单体", kind: "singleNearest" }],
+        options: [
+          { id: "single", label: "单体", kind: "singleNearest" },
+          { id: "lowestHp", label: "最低生命", kind: "lowestHealth", range: 12, count: 1, budget: { perf: 6 }, presentation: { indicatorShape: "circle", indicatorSize: { radius: 12 } } },
+          { id: "nearest3", label: "最近3个", kind: "allInRange", range: 8, maxCount: 3, budget: { perf: 6 }, presentation: { indicatorShape: "circle", indicatorSize: { radius: 8 } } },
+        ],
       },
       {
         id: "a1",
         type: "Action",
         defaultOption: "mark",
-        options: [{ id: "mark", label: "印记20s", kind: "Mark", tag: "hunt_mark" }],
+        options: [
+          { id: "mark", label: "印记20s", kind: "Mark", tag: "hunt_mark" },
+          { id: "mark_vuln", label: "易伤印记15s", kind: "Mark", tag: "vuln_mark", debuff: { kind: "vulnerable", power: 0.15, durationMs: 15000 }, budget: { cc: 10 } },
+          { id: "mark_damage", label: "伤害印记10s", kind: "Mark", tag: "dmg_mark", damageOnHit: { scale: 0.3, flat: 10 }, budget: { damage: 15 } },
+        ],
       },
       {
         id: "a2",
@@ -623,6 +643,20 @@ export const templates = [
             kind: "MarkReward",
             requiredTag: "hunt_mark",
             reward: { type: "dropBonus", table: "pve_bonus" },
+          },
+          {
+            id: "bonus_exp",
+            label: "击杀经验加成",
+            kind: "MarkReward",
+            requiredTag: "hunt_mark",
+            reward: { type: "expBonus", multiplier: 1.5 },
+          },
+          {
+            id: "bonus_heal",
+            label: "击杀恢复生命",
+            kind: "MarkReward",
+            requiredTag: "hunt_mark",
+            reward: { type: "healOnKill", amount: 50 },
           },
         ],
       },
@@ -639,7 +673,11 @@ export const templates = [
         id: "tl1",
         type: "Timeline",
         defaultOption: "noDelay",
-        options: [{ id: "noDelay", label: "无延迟", delayMs: 0 }],
+        options: [
+          { id: "noDelay", label: "无延迟", delayMs: 0 },
+          { id: "delay200", label: "0.2s延迟", delayMs: 200, budget: { damage: 3 } },
+          { id: "delay400", label: "0.4s延迟", delayMs: 400, budget: { damage: 8 } },
+        ],
       },
     ],
   },
