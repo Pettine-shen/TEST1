@@ -9,14 +9,16 @@
       .wrap { display: grid; grid-template-columns: 420px 1fr; height: 100vh; }
       .panel { padding: 14px; border-right: 1px solid rgba(255,255,255,0.08); overflow:auto; }
       .game { position: relative; }
-      canvas { width: 100%; height: 100%; display:block; background: radial-gradient(1000px 600px at 30% 30%, rgba(120,140,255,0.12), transparent 55%), #070a14; }
+      canvas { width: 100%; height: 100%; display:block; background: #1a3a1a; }
       h2 { margin: 0 0 10px; font-size: 16px; }
       .row { display:flex; gap:10px; align-items:center; margin: 8px 0; flex-wrap:wrap; }
       select, button, input { background:#121a33; color:#e8ecff; border:1px solid rgba(255,255,255,0.14); border-radius:8px; padding:8px 10px; }
       button { cursor:pointer; }
       button.primary { background:#2a3cff; border-color:#2a3cff; }
       button.danger { background:#a41d3a; border-color:#a41d3a; }
-      .slot { border:1px solid rgba(255,255,255,0.12); border-radius:10px; padding:10px; margin:10px 0; background: rgba(255,255,255,0.04); }
+      .slot { border:1px solid rgba(255,255,255,0.12); border-radius:10px; padding:10px; margin:10px 0; background: rgba(255,255,255,0.04); cursor:move; }
+      .slot:hover { background: rgba(255,255,255,0.06); }
+      .slot.dragging { opacity:0.5; }
       .slotTitle { display:flex; justify-content:space-between; align-items:center; gap:10px; }
       .muted { opacity:0.8; font-size:12px; }
       pre { background:#0c1228; border:1px solid rgba(255,255,255,0.08); border-radius:10px; padding:10px; overflow:auto; max-height: 220px; }
@@ -37,31 +39,55 @@
           <button id="applyBtn" class="primary">应用到战斗</button>
           <button id="resetBtn">重置为默认</button>
           <button id="spawnBtn">刷新怪物</button>
+          <button id="randomWeaponBtn">随机武器</button>
           <button id="pauseBtn">暂停</button>
         </div>
         <div class="hint">
-          玩法说明：你可以把“减速/伤害/延迟/目标选择”等槽位上下移动，或切换档位。<br/>
+          玩法说明：你可以把"减速/伤害/延迟/目标选择"等槽位上下移动，或切换档位。<br/>
           顺序会影响命中与收益（例如先选目标再判距离 vs 先判资源再延迟）。<br/>
-          当前是 PVE 验证版：怪物有简单 AI、掉落材料。
+          当前是 PVE 验证版：怪物有简单 AI、掉落材料。<br/>
+          <span style="color:#ffaa00;">点击"刷新怪物"会同时获得新的随机武器！</span>
+        </div>
+
+        <h2 style="margin-top:14px;">技能描述</h2>
+        <div id="skillDescription" style="background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:12px; margin-bottom:10px; font-size:15px; font-weight:bold; color:#e8ecff; min-height:24px;">
+          (加载中...)
+        </div>
+
+        <h2 style="margin-top:14px;">ECA 拼装可视化</h2>
+        <div id="ecaVisualization" style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:12px; margin-bottom:10px; min-height:100px;">
+          (加载中...)
         </div>
 
         <div id="slots"></div>
 
+        <h2 style="margin-top:14px;">施法体验预览</h2>
+        <div id="previewArea" style="background:rgba(255,255,255,0.03); border-radius:8px; padding:10px; margin-bottom:10px;">
+          <div id="previewSummary">(选择模板后显示)</div>
+          <canvas id="previewCanvas" width="200" height="150" style="width:100%; max-width:200px; height:150px; border:1px solid rgba(255,255,255,0.1); border-radius:6px; margin-top:8px;"></canvas>
+        </div>
+        
+        <h2 style="margin-top:14px;">预算</h2>
+        <div id="budgetDisplay" style="margin-bottom:10px;"></div>
+        
         <h2 style="margin-top:14px;">导出（Assembly）</h2>
-        <pre id="exportOut">(点击“应用到战斗”后生成)</pre>
+        <pre id="exportOut">(点击"应用到战斗"后生成)</pre>
       </div>
 
       <div class="game">
         <canvas id="c"></canvas>
         <div class="hud">
-          <div>玩家HP：<b id="hp">-</b></div>
-          <div>怪物数：<b id="mon">-</b></div>
-          <div>掉落：<b id="drops">-</b></div>
-          <div class="hint">WASD 移动，鼠标瞄准，左键施法（CastConfirm）<br/>按下“刷新怪物”可重新开局</div>
+          <div>玩家HP：<b id="hp">-</b> / <span id="maxHp">-</span></div>
+          <div style="margin-top:4px;">Mana：<b id="mana">-</b> / <span id="maxMana">-</span></div>
+          <div style="margin-top:4px;">状态：<b id="playerState">-</b></div>
+          <div style="margin-top:4px;">怪物数：<b id="mon">-</b></div>
+          <div style="margin-top:4px;">掉落：<b id="drops">-</b></div>
+          <div id="castFailHint" style="margin-top:6px; color:#ff5a7a; opacity:0; transition:opacity 0.3s;"></div>
+          <div class="hint">WASD 移动，鼠标瞄准，左键施法，Space 翻滚<br/>按下"刷新怪物"可重新开局</div>
         </div>
       </div>
     </div>
 
-    <script type="module" src="./play.js"></script>
+    <script type="module" src="/editor/play.js"></script>
   </body>
 </html>

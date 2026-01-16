@@ -40,11 +40,20 @@ export function guardsPass(runtimeState, guards, nowMs) {
 function executeOps(ops, startIndex, ctx, world, scheduleFn) {
   for (let i = startIndex; i < ops.length; i++) {
     const op = ops[i];
+    console.log(`Executing op ${i}:`, op.type, op.kind || op.slotId);
+    // Store current op index in context for actions that need to know their position
+    const ctxWithOpIndex = { ...ctx, currentOpIndex: i };
     if (op.type === "Condition") {
       const ok = op.eval(ctx, world);
-      if (!ok) return;
+      console.log(`Condition ${op.kind} result:`, ok);
+      if (!ok) {
+        console.log("Condition failed, stopping execution");
+        return;
+      }
     } else if (op.type === "Target") {
-      ctx.targets = op.select(ctx, world).map((t) => t.id || t);
+      const selected = op.select(ctx, world);
+      ctx.targets = selected.map((t) => t.id || t);
+      console.log("Target selected:", ctx.targets);
     } else if (op.type === "Timeline") {
       const restIndex = i + 1;
       if (restIndex < ops.length) {
@@ -56,16 +65,24 @@ function executeOps(ops, startIndex, ctx, world, scheduleFn) {
       }
       return;
     } else if (op.type === "Action") {
-      op.exec(ctx, world);
+      console.log("Executing Action:", op.kind);
+      op.exec(ctxWithOpIndex, world); // Pass context with op index
+      console.log("After Action exec, projectiles:", world.projectiles?.length || 0);
     }
   }
 }
 
 export function executeAssembly(assembly, ctx, world, schedule) {
+  console.log("executeAssembly called:", assembly.templateId, "ops count:", assembly.ops?.length);
   const runtime = (world.skillRuntime[assembly.templateId] =
     world.skillRuntime[assembly.templateId] || {});
-  if (!guardsPass(runtime, assembly.guards, ctx.time)) return;
-  executeOps(assembly.ops, 0, ctx, world, (fn, delay) =>
+  if (!guardsPass(runtime, assembly.guards, ctx.time)) {
+    console.log("Guards failed");
+    return;
+  }
+  const ctxWithAssembly = { ...ctx, assembly };
+  console.log("Executing ops, count:", assembly.ops.length);
+  executeOps(assembly.ops, 0, ctxWithAssembly, world, (fn, delay) =>
     schedule ? schedule(fn, delay, ctx.time) : defaultScheduler(world.queue, fn, delay, ctx.time)
   );
 }
@@ -87,6 +104,58 @@ export function compileAssembly(template, order, slotOptions) {
   const budgets = sumBudgets(ops, template.baseBudget || {});
   assertWithinCaps(budgets, template.budgetCap);
   const signature = `sig-${template.id}-${order.join("-")}`;
+  
+  // Extract presentation parameters
+  const presentation = {
+    windupMs: template.presentation?.windupMs || 200,
+    recoveryMs: template.presentation?.recoveryMs || 300,
+    projectileSpeed: template.presentation?.projectileSpeed || 12,
+    indicatorShape: template.presentation?.indicatorShape || "line",
+    indicatorSize: template.presentation?.indicatorSize || {},
+  };
+  
+  // Override with option-specific presentation params if available
+  for (const { opt } of ordered) {
+    if (opt.presentation) {
+      if (opt.presentation.windupMs !== undefined) presentation.windupMs = opt.presentation.windupMs;
+      if (opt.presentation.recoveryMs !== undefined) presentation.recoveryMs = opt.presentation.recoveryMs;
+      if (opt.presentation.projectileSpeed !== undefined) presentation.projectileSpeed = opt.presentation.projectileSpeed;
+      if (opt.presentation.indicatorShape !== undefined) presentation.indicatorShape = opt.presentation.indicatorShape;
+      if (opt.presentation.indicatorSize !== undefined) {
+        presentation.indicatorSize = { ...presentation.indicatorSize, ...opt.presentation.indicatorSize };
+      }
+    }
+  }
+  
+  // Extract indicator info from Target ops
+  const targetOp = ops.find((op) => op.type === "Target");
+  if (targetOp) {
+    if (targetOp.kind === "singleNearest" || targetOp.kind === "line") {
+      presentation.indicatorShape = "line";
+      presentation.indicatorSize.range = targetOp.range || 12;
+    } else if (targetOp.kind === "cone") {
+      presentation.indicatorShape = "cone";
+      presentation.indicatorSize.range = targetOp.range || 10;
+      presentation.indicatorSize.angle = targetOp.angle || 60;
+    } else if (targetOp.kind === "circle") {
+      presentation.indicatorShape = "circle";
+      presentation.indicatorSize.radius = targetOp.radius || 3;
+    } else if (targetOp.kind === "allInRange" || targetOp.kind === "lowestHealth" || targetOp.kind === "highestHealth" || targetOp.kind === "allies" || targetOp.kind === "markedTargets") {
+      presentation.indicatorShape = "circle";
+      presentation.indicatorSize.radius = targetOp.range || 12;
+    } else if (targetOp.kind === "self") {
+      presentation.indicatorShape = "circle";
+      presentation.indicatorSize.radius = 1;
+    }
+  }
+  
+  // Extract dash info from Action ops
+  const dashOp = ops.find((op) => op.type === "Action" && op.kind === "Dash");
+  if (dashOp) {
+    presentation.indicatorShape = "dash";
+    presentation.indicatorSize.distance = dashOp.distance || 5;
+  }
+  
   return {
     templateId: template.id,
     event: template.event,
@@ -95,6 +164,7 @@ export function compileAssembly(template, order, slotOptions) {
     guards: template.guards || {},
     budgets,
     signature,
+    presentation,
   };
 }
 
