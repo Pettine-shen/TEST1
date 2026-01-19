@@ -6,6 +6,7 @@ import { createRng, pickChance } from "../engine/rng.js";
 import { generateSkillDescription, generateFullSkillDescription } from "../engine/skillDescription.js";
 import { generateRandomWeapon } from "../engine/randomWeapon.js";
 import { applyDamage, applyDebuff } from "../engine/ops.js";
+import { SKILL_PERSONALITIES } from "../configs/skillPersonalities.js";
 
 // ---------- UI State ----------
 let currentTemplate = templates[0];
@@ -470,19 +471,8 @@ function newWorld() {
     decorations: [], // Background decorations (rocks, grass, flowers)
   };
   
-  // Generate background decorations
-  const decorationTypes = ["rock", "grass", "flower", "bush"];
-  for (let i = 0; i < 40; i++) {
-    world.decorations.push({
-      type: decorationTypes[Math.floor(Math.random() * decorationTypes.length)],
-      position: {
-        x: (Math.random() - 0.5) * 40, // Spread across a 40x40 area
-        y: (Math.random() - 0.5) * 40,
-      },
-      size: 0.3 + Math.random() * 0.4, // Size variation
-      rotation: Math.random() * Math.PI * 2,
-    });
-  }
+  // 装饰元素改为程序化生成，不再预生成
+  // 装饰元素会在渲染时根据玩家位置动态生成
   world.entities.player = {
     id: "player",
     kind: "player",
@@ -2387,6 +2377,75 @@ function drawDecoration(deco) {
   ctx2d.restore();
 }
 
+/**
+ * 程序化生成装饰元素（根据玩家位置动态生成）
+ */
+function drawProceduralDecorations() {
+  const player = world.entities.player;
+  const playerPos = player?.position || { x: 0, y: 0 };
+  const scale = 45 * devicePixelRatio;
+  
+  // 计算可见区域的世界坐标范围（扩大一些，确保边缘也有装饰）
+  const viewWidth = canvas.width / scale;
+  const viewHeight = canvas.height / scale;
+  const margin = 5; // 额外的边距，确保移动时也能看到装饰
+  const minX = playerPos.x - viewWidth / 2 - margin;
+  const maxX = playerPos.x + viewWidth / 2 + margin;
+  const minY = playerPos.y - viewHeight / 2 - margin;
+  const maxY = playerPos.y + viewHeight / 2 + margin;
+  
+  // 装饰元素的网格大小（世界单位）
+  const gridSize = 3; // 每3个世界单位生成一个装饰元素
+  
+  // 使用确定性随机数生成器（基于网格坐标）
+  function hash(x, y) {
+    const n = Math.floor(x / gridSize) * 73856093 + Math.floor(y / gridSize) * 19349663;
+    return ((n * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  }
+  
+  // 装饰类型数组
+  const decorationTypes = ["rock", "grass", "flower", "bush"];
+  
+  // 遍历可见区域内的网格
+  const startGridX = Math.floor(minX / gridSize);
+  const endGridX = Math.ceil(maxX / gridSize);
+  const startGridY = Math.floor(minY / gridSize);
+  const endGridY = Math.ceil(maxY / gridSize);
+  
+  for (let gridX = startGridX; gridX <= endGridX; gridX++) {
+    for (let gridY = startGridY; gridY <= endGridY; gridY++) {
+      const worldX = gridX * gridSize;
+      const worldY = gridY * gridSize;
+      
+      // 使用哈希函数确定这个网格是否有装饰元素（30%概率）
+      const h = hash(gridX, gridY);
+      if (h > 0.3) continue; // 70%的网格不生成装饰，保持稀疏
+      
+      // 在网格内随机偏移位置
+      const offsetX = (hash(gridX + 1, gridY) - 0.5) * gridSize * 0.8;
+      const offsetY = (hash(gridX, gridY + 1) - 0.5) * gridSize * 0.8;
+      const decoX = worldX + offsetX;
+      const decoY = worldY + offsetY;
+      
+      // 确定装饰类型
+      const typeIndex = Math.floor(hash(gridX * 2, gridY * 2) * decorationTypes.length);
+      const decoType = decorationTypes[typeIndex];
+      
+      // 确定大小和旋转
+      const decoSize = 0.2 + hash(gridX * 3, gridY * 3) * 0.4;
+      const decoRotation = hash(gridX * 4, gridY * 4) * Math.PI * 2;
+      
+      // 绘制装饰元素
+      drawDecoration({
+        type: decoType,
+        position: { x: decoX, y: decoY },
+        size: decoSize,
+        rotation: decoRotation,
+      });
+    }
+  }
+}
+
 function screenToWorld(px, py) {
   // Camera follows player: pixels -> world units (relative to player position)
   const player = world.entities.player;
@@ -2585,12 +2644,8 @@ function draw() {
   // Draw grass background
   drawGrassBackground();
   
-  // Draw decorations (rocks, grass, flowers, bushes)
-  if (world.decorations) {
-    for (const deco of world.decorations) {
-      drawDecoration(deco);
-    }
-  }
+  // Draw decorations (rocks, grass, flowers, bushes) - 程序化生成
+  drawProceduralDecorations();
   
   // Debug: draw center crosshair (subtle, for aiming)
   const centerX = canvas.width / 2;
@@ -2810,8 +2865,18 @@ function draw() {
         ctx2d.translate(p.x + Math.cos(weaponAngle) * handOffset, p.y + Math.sin(weaponAngle) * handOffset);
         ctx2d.rotate(weaponAngle);
         
-        // 武器主体（根据技能类型改变颜色）
-        const weaponColor = currentAssembly.templateId === "tpl_ranged_proj_v1" ? "#88ccff" : "#ffaa88";
+        // 武器主体（根据技能性格改变颜色）
+        let weaponColor = "#88ccff"; // 默认蓝色
+        if (currentTemplate && currentTemplate._personality) {
+          const personality = SKILL_PERSONALITIES[currentTemplate._personality];
+          if (personality && personality.visualStyle) {
+            weaponColor = personality.visualStyle.color || weaponColor;
+          }
+        } else if (currentAssembly && currentAssembly.templateId === "tpl_ranged_proj_v1") {
+          weaponColor = "#88ccff";
+        } else {
+          weaponColor = "#ffaa88";
+        }
         ctx2d.fillStyle = weaponColor;
         ctx2d.shadowBlur = 4 * devicePixelRatio;
         ctx2d.shadowColor = weaponColor;
@@ -3266,18 +3331,40 @@ function draw() {
         ctx2d.shadowBlur = 0;
         ctx2d.restore();
       } else {
-        // Normal projectile
+        // Normal projectile - 根据技能性格应用不同的视觉风格
         const r = Math.max(6, (proj.radius || 0.3) * 45) * devicePixelRatio; // Make projectiles more visible (min 6px)
         ctx2d.save();
+        
+        // 获取技能性格（从currentTemplate或currentAssembly）
+        let personalityColor = "#ffd700"; // 默认金色
+        let personalityGlow = "#ffd700";
+        let personalityBorder = "#ff8800";
+        
+        if (currentTemplate && currentTemplate._personality) {
+          const personality = SKILL_PERSONALITIES[currentTemplate._personality];
+          if (personality && personality.visualStyle) {
+            personalityColor = personality.visualStyle.color || personalityColor;
+            personalityGlow = personality.visualStyle.color || personalityGlow;
+            // 根据颜色调整边框颜色（稍微暗一点）
+            const colorMatch = personalityColor.match(/#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i);
+            if (colorMatch) {
+              const r = parseInt(colorMatch[1], 16);
+              const g = parseInt(colorMatch[2], 16);
+              const b = parseInt(colorMatch[3], 16);
+              personalityBorder = `rgb(${Math.max(0, r - 40)}, ${Math.max(0, g - 40)}, ${Math.max(0, b - 40)})`;
+            }
+          }
+        }
+        
         // Glow effect
         ctx2d.shadowBlur = 10 * devicePixelRatio;
-        ctx2d.shadowColor = "#ffd700";
-        ctx2d.fillStyle = "#ffd700";
+        ctx2d.shadowColor = personalityGlow;
+        ctx2d.fillStyle = personalityColor;
         ctx2d.beginPath();
         ctx2d.arc(p.x, p.y, r, 0, Math.PI * 2);
         ctx2d.fill();
         // Border
-        ctx2d.strokeStyle = "#ff8800";
+        ctx2d.strokeStyle = personalityBorder;
         ctx2d.lineWidth = 3 * devicePixelRatio;
         ctx2d.stroke();
         // Inner highlight

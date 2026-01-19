@@ -21,18 +21,30 @@ import {
   hasDamageTag
 } from "../configs/ecaRules.js";
 import {
-  CORE_SKILLS,
-  SUPPORT_MODIFIERS,
-  isCompatible,
-  applySupportModifier
-} from "../configs/skillArchetypes.js";
+  SKILL_PERSONALITIES,
+  STRATEGY_DIMENSIONS,
+  SKILL_TIERS,
+} from "../configs/skillPersonalities.js";
+import {
+  BASE_ACTION_TYPES,
+  PROJECTILE_MODIFIERS,
+  DAMAGE_MODIFIERS,
+  QUANTITY_MODIFIERS,
+  AREA_MODIFIERS,
+  DEBUFF_MODIFIERS,
+  BUFF_MODIFIERS,
+  COMPOSITION_RULES,
+  composeAction,
+  selectModifiers,
+} from "../configs/actionComposition.js";
+// 移除主效果+副效果架构的导入，回退到原来的动态生成系统
 
 // 记录最近生成的武器（用于避免重复）
 let recentWeapons = [];
 const MAX_RECENT_WEAPONS = 50; // 增加到50个，提高重复检测能力
 
 /**
- * 动态生成技能模板结构（主效果+副效果架构）
+ * 动态生成技能模板结构（恢复原来的动态ECA生成系统，添加关联性约束）
  * @param {Function} rng - 随机数生成器
  * @param {Object} complexityConfig - 复杂度配置（可选，默认使用 COMPLEXITY_CONFIG）
  * @returns {Object} 动态生成的模板对象
@@ -40,113 +52,33 @@ const MAX_RECENT_WEAPONS = 50; // 增加到50个，提高重复检测能力
 function generateDynamicTemplate(rng, complexityConfig = null) {
   const complexity = complexityConfig || COMPLEXITY_CONFIG;
   
-  // 1. 选择事件
+  // 1. 选择技能性格（核心改进：让技能有明显的"性格"）
+  const personalityKeys = Object.keys(SKILL_PERSONALITIES);
+  const selectedPersonalityKey = personalityKeys[Math.floor(rng() * personalityKeys.length)];
+  const selectedPersonality = SKILL_PERSONALITIES[selectedPersonalityKey];
+  console.log(`Selected personality: ${selectedPersonality.label} (${selectedPersonality.description})`);
+  
+  // 2. 选择策略维度（进一步明确技能定位）
+  const strategyType = selectStrategyDimension(rng);
+  console.log(`Selected strategy: ${strategyType.label} (${strategyType.description})`);
+  
+  // 3. 选择事件
   const eventRule = selectWeighted(EVENT_RULES, rng, (rule) => rule.weight || 1.0);
   
-  // 2. 选择主效果（Core Skill）
-  const coreSkill = selectWeighted(CORE_SKILLS, rng, (skill) => skill.weight || 1.0);
-  console.log(`Selected core skill: ${coreSkill.label} (${coreSkill.category})`);
-  
-  // 3. 选择副效果（Support Modifiers）- 根据复杂度调整数量
-  // 基础最大副效果数：根据overall复杂度确定
-  let baseMaxSupports = 1;
-  if (complexity.overall > 0.7) {
-    baseMaxSupports = 3;
-  } else if (complexity.overall > 0.4) {
-    baseMaxSupports = 2;
-  }
-  
-  // 应用副效果数量系数
-  const supportConfig = complexity.supportModifierCount || { min: 0.3, max: 0.9 };
-  const adjustedMaxSupports = Math.max(1, Math.floor(baseMaxSupports * supportConfig.max));
-  
-  // 计算实际副效果数量：至少有一定概率有副效果
-  let supportCount = 0;
-  const minSupportChance = supportConfig.min || 0.3;
-  if (rng() < minSupportChance) {
-    // 至少1个副效果
-    supportCount = 1 + Math.floor(rng() * adjustedMaxSupports);
-  } else {
-    // 可能0个，也可能更多
-    supportCount = Math.floor(rng() * (adjustedMaxSupports + 1));
-  }
-  
-  supportCount = Math.min(supportCount, adjustedMaxSupports); // 确保不超过最大值
-  
-  const selectedSupports = [];
-  const availableSupports = SUPPORT_MODIFIERS.filter(support => 
-    isCompatible(support, coreSkill)
-  );
-  
-  // 加权随机选择副效果
-  const highRiskConfig = complexity.highRiskHighRewardWeight || { enabled: true, weightMultiplier: 0.6 };
-  
-  for (let i = 0; i < supportCount && availableSupports.length > 0; i++) {
-    // 计算权重：高风险高回报副效果根据配置调整权重
-    const weights = availableSupports.map(s => {
-      let weight = s.weight || 1.0;
-      
-      // 如果是高风险高回报类别，应用权重倍数
-      if (highRiskConfig.enabled && s.category === "high_risk") {
-        weight *= (highRiskConfig.weightMultiplier || 0.6);
-      }
-      
-      return weight;
-    });
-    
-    const totalWeight = weights.reduce((sum, w) => sum + w, 0);
-    if (totalWeight <= 0) break; // 如果所有权重为0，停止选择
-    
-    let random = rng() * totalWeight;
-    
-    let selectedIndex = 0;
-    for (let j = 0; j < availableSupports.length; j++) {
-      random -= weights[j];
-      if (random <= 0) {
-        selectedIndex = j;
-        break;
-      }
-    }
-    
-    const selectedSupport = availableSupports[selectedIndex];
-    selectedSupports.push(selectedSupport);
-    availableSupports.splice(selectedIndex, 1); // 移除已选择的，避免重复
-    console.log(`Selected support modifier: ${selectedSupport.label} (category: ${selectedSupport.category})`);
-  }
-  
-  // 4. 应用副效果到主效果
-  let modifiedAction = coreSkill.baseAction;
-  const appliedNegativeEffects = [];
-  
-  for (const support of selectedSupports) {
-    modifiedAction = applySupportModifier(modifiedAction, support);
-    
-    // 收集负面效果
-    if (support.negativeEffects && support.negativeEffects.length > 0) {
-      appliedNegativeEffects.push(...support.negativeEffects);
-    }
-  }
-  
-  // 5. 根据复杂度确定槽位数量（简化：主效果+副效果已经确定了动作）
+  // 2. 根据复杂度确定槽位数量范围
   const { minSlots, maxSlots } = STRUCTURE_RULES.getSlotRange(complexity);
-  const slotCount = Math.max(minSlots, Math.min(maxSlots, 3 + supportCount)); // 至少3个槽位（事件+主效果+目标/条件）
+  const slotCount = Math.floor(rng() * (maxSlots - minSlots + 1)) + minSlots;
   
-  // 6. 确定各类型槽位数量（根据复杂度配置）
-  const actionCount = 1; // 主效果动作（副效果已经应用到主效果中）
+  // 3. 根据复杂度确定各类型槽位数量
+  const [actionMin, actionMax] = STRUCTURE_RULES.getActionRange(complexity);
+  const actionCount = Math.floor(rng() * (actionMax - actionMin + 1)) + actionMin;
   
-  // 根据复杂度配置计算条件数量
   const [conditionMin, conditionMax] = STRUCTURE_RULES.getConditionRange(complexity);
   const conditionCount = Math.floor(rng() * (conditionMax - conditionMin + 1)) + conditionMin;
   
-  // 根据复杂度配置计算目标数量
   const [targetMin, targetMax] = STRUCTURE_RULES.getTargetRange(complexity);
-  let targetCount = coreSkill.category === "projectile" || coreSkill.category === "beam" ? 1 : 0; // 投射类需要目标
-  if (targetMax > 0 && rng() < 0.5) {
-    // 50%概率添加额外目标选择
-    targetCount = Math.min(targetMax, targetCount + Math.floor(rng() * (targetMax - targetMin + 1)) + targetMin);
-  }
+  const targetCount = Math.floor(rng() * (targetMax - targetMin + 1)) + targetMin;
   
-  // 根据复杂度配置计算时间线数量
   const [timelineMin, timelineMax] = STRUCTURE_RULES.getTimelineRange(complexity);
   const timelineCount = Math.floor(rng() * (timelineMax - timelineMin + 1)) + timelineMin;
   
@@ -184,56 +116,169 @@ function generateDynamicTemplate(rng, complexityConfig = null) {
     });
   }
   
-  // 添加主效果动作槽位（使用修改后的主效果）
-  const mainActionId = `core_${coreSkill.id}_${Date.now()}`;
-  slots.push({
-    id: `a${slotIdCounter++}`,
-    type: "Action",
-    options: [{
-      id: mainActionId,
-      label: coreSkill.label,
-      ...modifiedAction,
-      _coreSkill: coreSkill.id,
-      _supportModifiers: selectedSupports.map(s => s.id),
-    }],
-    defaultOption: mainActionId,
-  });
-  
-  // 如果有负面效果，添加为Debuff动作（负面效果会在运行时应用到玩家身上）
-  if (appliedNegativeEffects.length > 0) {
-    for (const negativeEffect of appliedNegativeEffects) {
-      slots.push({
-        id: `a${slotIdCounter++}`,
-        type: "Action",
-        options: [{
-          id: `negative_${negativeEffect.kind}_${Date.now()}`,
-          label: `负面：${getDebuffLabel(negativeEffect.kind)}`,
-          kind: "SelfDebuff",
-          debuff: negativeEffect,
-          budget: {},
-          _isNegativeEffect: true,
-        }],
-        defaultOption: `negative_${negativeEffect.kind}_${Date.now()}`,
-      });
+  // 添加动作槽位（使用组合系统动态生成动作选项）
+  for (let i = 0; i < actionCount; i++) {
+    // 1. 根据性格和策略维度选择基础动作类型
+    const baseTypeKeys = Object.keys(BASE_ACTION_TYPES);
+    const baseTypeWeights = baseTypeKeys.map(key => {
+      const baseType = BASE_ACTION_TYPES[key];
+      let weight = 1.0;
+      
+      // 应用性格权重
+      const personalityWeights = selectedPersonality.actionWeights || {};
+      for (const [key, personalityWeight] of Object.entries(personalityWeights)) {
+        if (baseType.id.toLowerCase().includes(key.toLowerCase()) || 
+            baseType.label.includes(key)) {
+          weight *= personalityWeight;
+        }
+      }
+      
+      // 应用策略维度权重
+      if (strategyType && strategyType.actionWeights) {
+        for (const [key, strategyWeight] of Object.entries(strategyType.actionWeights)) {
+          if (baseType.id.toLowerCase().includes(key.toLowerCase()) || 
+              baseType.label.includes(key)) {
+            weight *= strategyWeight;
+          }
+        }
+      }
+      
+      // 应用复杂度权重
+      if (baseType.id === "Beam") {
+        weight *= (complexity.complexActionWeight.beam || 1.0);
+      } else if (baseType.id === "SpawnAreaDoT") {
+        weight *= (complexity.complexActionWeight.areaDot || 1.0);
+      } else if (baseType.id === "Summon") {
+        weight *= (complexity.complexActionWeight.summon || 1.0);
+      } else if (baseType.id === "Charge") {
+        weight *= (complexity.complexActionWeight.charge || 1.0);
+      }
+      
+      return { baseType, weight };
+    });
+    
+    // 根据权重选择基础类型
+    const totalWeight = baseTypeWeights.reduce((sum, item) => sum + Math.max(0, item.weight), 0);
+    let random = rng() * totalWeight;
+    let selectedBaseType = baseTypeWeights[0].baseType;
+    for (const item of baseTypeWeights) {
+      random -= Math.max(0, item.weight);
+      if (random <= 0) {
+        selectedBaseType = item.baseType;
+        break;
+      }
     }
-  }
-  
-  // 如果有副效果添加了额外的Debuff，也添加
-  for (const support of selectedSupports) {
-    if (support.effects.additionalDebuff) {
-      slots.push({
-        id: `a${slotIdCounter++}`,
-        type: "Action",
-        options: [{
-          id: `support_debuff_${support.id}_${Date.now()}`,
-          label: support.label,
-          kind: "Debuff",
-          debuff: support.effects.additionalDebuff,
-          budget: support.budget || {},
-        }],
-        defaultOption: `support_debuff_${support.id}_${Date.now()}`,
-      });
+    
+    // 2. 根据组合规则选择修饰符
+    const compositionRule = COMPOSITION_RULES[selectedBaseType.id] || { maxModifiers: 1, allowedCombinations: [], exclusivePairs: [] };
+    const maxModifiers = Math.min(compositionRule.maxModifiers || 1, rng() < 0.7 ? 1 : 2); // 70%概率1个修饰符，30%概率2个
+    
+    // 确定需要的修饰符类型
+    const modifierTypes = [];
+    if (selectedBaseType.compatibleModifiers.includes("projectileModifier")) {
+      modifierTypes.push({ type: "projectile", pool: Object.values(PROJECTILE_MODIFIERS) });
     }
+    if (selectedBaseType.compatibleModifiers.includes("damageModifier")) {
+      modifierTypes.push({ type: "damage", pool: Object.values(DAMAGE_MODIFIERS) });
+    }
+    if (selectedBaseType.compatibleModifiers.includes("quantityModifier")) {
+      modifierTypes.push({ type: "quantity", pool: Object.values(QUANTITY_MODIFIERS) });
+    }
+    if (selectedBaseType.compatibleModifiers.includes("areaModifier")) {
+      modifierTypes.push({ type: "area", pool: Object.values(AREA_MODIFIERS) });
+    }
+    if (selectedBaseType.compatibleModifiers.includes("debuffModifier")) {
+      modifierTypes.push({ type: "debuff", pool: Object.values(DEBUFF_MODIFIERS) });
+    }
+    if (selectedBaseType.compatibleModifiers.includes("buffModifier")) {
+      modifierTypes.push({ type: "buff", pool: Object.values(BUFF_MODIFIERS) });
+    }
+    
+    // 生成多个组合选项（3-5个）
+    const optionCount = Math.floor(rng() * 3) + 3; // 3-5个选项
+    const actionOptions = [];
+    const usedCombinations = new Set(); // 避免重复组合
+    let attempts = 0;
+    const maxAttempts = optionCount * 10; // 最多尝试次数，避免死循环
+    
+    while (actionOptions.length < optionCount && attempts < maxAttempts) {
+      attempts++;
+      
+      // 选择修饰符数量
+      const modifierCount = modifierTypes.length > 0 
+        ? Math.min(maxModifiers, Math.floor(rng() * maxModifiers) + 1)
+        : 0;
+      
+      // 选择修饰符
+      const selectedModifiers = [];
+      const excludeIds = [];
+      
+      for (let mIdx = 0; mIdx < modifierCount && modifierTypes.length > 0; mIdx++) {
+        // 随机选择一个修饰符类型
+        const modifierType = modifierTypes[Math.floor(rng() * modifierTypes.length)];
+        const modifier = selectModifiers(modifierType.pool, 1, rng, excludeIds)[0];
+        
+        if (modifier) {
+          // 检查互斥规则
+          let isExclusive = false;
+          for (const pair of compositionRule.exclusivePairs || []) {
+            if (pair.includes(modifier.id)) {
+              const otherId = pair.find(id => id !== modifier.id);
+              if (selectedModifiers.some(m => m.id === otherId)) {
+                isExclusive = true;
+                break;
+              }
+            }
+          }
+          
+          if (!isExclusive) {
+            selectedModifiers.push(modifier);
+            excludeIds.push(modifier.id);
+          }
+        }
+      }
+      
+      // 组合生成动作
+      const composedAction = composeAction(selectedBaseType, selectedModifiers, rng);
+      
+      // 检查是否重复
+      const comboKey = `${selectedBaseType.id}_${selectedModifiers.map(m => m.id).sort().join('_')}`;
+      if (!usedCombinations.has(comboKey)) {
+        usedCombinations.add(comboKey);
+        actionOptions.push(composedAction);
+      }
+      // 如果重复，继续下一次循环尝试
+    }
+    
+    // 如果生成的选项太少，添加一个无修饰符的基础动作
+    if (actionOptions.length < 2) {
+      const baseComboKey = `${selectedBaseType.id}_`;
+      const hasBaseAction = Array.from(usedCombinations).some(key => key === baseComboKey);
+      if (!hasBaseAction) {
+        const baseAction = composeAction(selectedBaseType, [], rng);
+        actionOptions.unshift(baseAction);
+        usedCombinations.add(baseComboKey);
+      }
+    }
+    
+    // 如果还是没有选项，使用传统ACTION_RULES作为后备
+    if (actionOptions.length === 0) {
+      const fallbackActions = ACTION_RULES.filter(rule => rule.kind === selectedBaseType.kind)
+        .slice(0, 3)
+        .map(rule => ({
+          id: rule.id,
+          kind: rule.kind,
+          ...rule,
+        }));
+      actionOptions.push(...fallbackActions);
+    }
+    
+    slots.push({
+      id: `a${slotIdCounter++}`,
+      type: "Action",
+      options: actionOptions,
+      defaultOption: actionOptions[0]?.id || "proj_fast",
+    });
   }
   
   // 添加时间线槽位
@@ -336,7 +381,10 @@ function generateDynamicTemplate(rng, complexityConfig = null) {
     }
   }
   
-  // 7. 生成模板对象
+  // 7. 应用关联性约束：在选项选择阶段处理（见generateRandomWeapon函数）
+  // 这里只生成模板结构，关联性约束在选项选择时应用
+  
+  // 8. 生成模板对象（包含性格和策略信息）
   const templateId = `dynamic_${Date.now()}_${Math.floor(rng() * 10000)}`;
   return {
     id: templateId,
@@ -344,22 +392,31 @@ function generateDynamicTemplate(rng, complexityConfig = null) {
     budgetCap: eventRule.budgetCap || { damage: 140, cc: 60, mobility: 0, proc: 40, perf: 50 },
     guards: eventRule.guards || {},
     event: eventRule.id,
-    _coreSkill: coreSkill.id,
-    _supportModifiers: selectedSupports.map(s => s.id),
-    _negativeEffects: appliedNegativeEffects,
+    _personality: selectedPersonalityKey,  // 保存性格信息
+    _strategy: strategyType ? strategyType.label : null,  // 保存策略信息
   };
 }
 
 /**
- * 获取debuff的中文标签
+ * 选择策略维度
  */
-function getDebuffLabel(kind) {
-  const labelMap = {
-    selfSlow: "自身减速",
-    selfVuln: "自身易伤",
-    selfRoot: "自身定身",
-  };
-  return labelMap[kind] || kind;
+function selectStrategyDimension(rng) {
+  // 随机选择一个策略维度（从所有维度中随机选择）
+  const allDimensions = [];
+  
+  // 收集所有策略维度
+  Object.values(STRATEGY_DIMENSIONS).forEach(dimensionGroup => {
+    Object.values(dimensionGroup).forEach(dimension => {
+      allDimensions.push(dimension);
+    });
+  });
+  
+  if (allDimensions.length === 0) {
+    // 如果没有策略维度，返回null
+    return null;
+  }
+  
+  return allDimensions[Math.floor(rng() * allDimensions.length)];
 }
 
 /**

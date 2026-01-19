@@ -4,6 +4,8 @@
  */
 
 import { CORE_SKILLS, SUPPORT_MODIFIERS } from "../configs/skillArchetypes.js";
+import { SKILL_PERSONALITIES, SKILL_TIERS } from "../configs/skillPersonalities.js";
+import { calculateSkillTier } from "./skillTier.js";
 
 /**
  * 生成技能描述
@@ -41,7 +43,7 @@ export function generateSkillDescription(template, order, slotOptions) {
 
   // 动态生成的模板使用通用描述生成器
   if (templateId && templateId.startsWith("dynamic_")) {
-    return generateGenericDescription(template, orderedSlots, targetSlot, actionSlots, conditionSlots);
+    return generateGenericDescription(template, orderedSlots, targetSlot, actionSlots, conditionSlots, slotOptions);
   }
 
   if (templateId === "tpl_ranged_proj_v1") {
@@ -798,17 +800,14 @@ function generateMarkExecDescription(orderedSlots, actionSlots) {
  * 通用技能描述生成（动态模板专用）
  * 按照 ECA 执行顺序生成完整描述，包含所有效果
  */
-function generateGenericDescription(template, orderedSlots, targetSlot, actionSlots, conditionSlots) {
+function generateGenericDescription(template, orderedSlots, targetSlot, actionSlots, conditionSlots, slotOptions = null) {
   if (!actionSlots || actionSlots.length === 0) {
     return "未知技能";
   }
 
   const parts = [];
 
-  // 检查是否是主效果+副效果架构
-  const coreSkillId = template?._coreSkill;
-  const supportModifierIds = template?._supportModifiers || [];
-  const negativeEffects = template?._negativeEffects || [];
+  // 移除标签显示（等级、性格、策略标签不在描述中显示）
   
   // 1. 识别事件类型（从模板中获取）
   const eventId = template?.event || "CastConfirm";
@@ -823,8 +822,9 @@ function generateGenericDescription(template, orderedSlots, targetSlot, actionSl
     parts.push("受击时");
   }
   
-  // 如果是主效果+副效果架构，优先使用主效果描述
-  if (coreSkillId) {
+  // 回退到原来的动态生成系统，不再使用主效果+副效果架构
+  // 移除主效果+副效果的描述逻辑
+  if (false) {
     const coreSkill = CORE_SKILLS.find(s => s.id === coreSkillId);
     if (coreSkill) {
       // 找到主效果动作选项（已应用副效果）

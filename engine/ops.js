@@ -80,6 +80,12 @@ function chooseTargets(world, caster, targetOpt) {
 }
 
 export function applyDamage(world, targets, caster, formula) {
+  // 安全检查：确保formula存在
+  if (!formula) {
+    console.warn("applyDamage: formula is undefined, skipping damage");
+    return;
+  }
+  
   const currentTime = world.time || Date.now();
   for (const t of targets) {
     // Check for invulnerable
@@ -441,42 +447,60 @@ export function buildOp(slot, option) {
         case "SpawnProjectile":
           // Generate projectile entity instead of immediate damage
           world.projectiles = world.projectiles || [];
-          const projId = `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
           const projSpeed = (option.presentation?.projectileSpeed || ctx.assembly?.presentation?.projectileSpeed || 12) / 3; // Reduced to 1/3 for visibility
           
-          // Calculate projectile direction: if there's a target, aim at target; otherwise use aimDir
-          let projDir = ctx.aimDir ? { x: ctx.aimDir.x, y: ctx.aimDir.y } : { x: 1, y: 0 };
-          if (targets.length > 0 && targets[0].position && caster.position) {
-            // Aim at first target
-            const dx = targets[0].position.x - caster.position.x;
-            const dy = targets[0].position.y - caster.position.y;
-            const dist = Math.hypot(dx, dy) || 1;
-            projDir = { x: dx / dist, y: dy / dist };
-            console.log("Projectile targeting:", targets[0].id, "direction:", projDir);
-          }
+          // Check if this is an orbit projectile with orbitCount
+          const orbitCount = option.orbit?.orbitCount || 1;
           
-          const proj = {
-            id: projId,
-            position: { x: caster.position.x, y: caster.position.y }, // Deep copy position
-            velocity: projDir,
-            speed: projSpeed,
-            radius: 0.3, // world units (increased from 0.15 for visibility)
-            // Projectile modifiers
-            homing: option.homing || null,
-            ricochet: option.ricochet || null,
-            spiral: option.spiral ? { ...option.spiral, angle: 0 } : null,
-            orbit: option.orbit ? { ...option.orbit, angle: 0, createdAt: ctx.time } : null,
-            return: option.return ? { ...option.return, started: false } : null,
-            hover: option.hover ? { ...option.hover, active: false, lastTickAt: 0 } : null, // Hover effect
-            damage: caster.chargeEffect || option.formula, // Use charge effect if available
-            casterId: ctx.casterId,
-            createdAt: ctx.time,
-            initialPosition: { x: caster.position.x, y: caster.position.y }, // Store initial position for distance calculation
-            targets: targets.map((t) => t.id), // Remember intended targets for collision
-            assembly: ctx.assembly,
-          };
-          world.projectiles.push(proj);
-          console.log("Projectile spawned:", proj, "position:", proj.position, "velocity:", proj.velocity, "speed:", proj.speed);
+          // Create multiple projectiles if orbitCount > 1
+          for (let i = 0; i < orbitCount; i++) {
+            const projId = `proj_${Date.now()}_${i}_${Math.random().toString(36).substr(2, 9)}`;
+            
+            // Calculate projectile direction: if there's a target, aim at target; otherwise use aimDir
+            let projDir = ctx.aimDir ? { x: ctx.aimDir.x, y: ctx.aimDir.y } : { x: 1, y: 0 };
+            if (targets.length > 0 && targets[0].position && caster.position) {
+              // Aim at first target
+              const dx = targets[0].position.x - caster.position.x;
+              const dy = targets[0].position.y - caster.position.y;
+              const dist = Math.hypot(dx, dy) || 1;
+              projDir = { x: dx / dist, y: dy / dist };
+              console.log("Projectile targeting:", targets[0].id, "direction:", projDir);
+            }
+            
+            // For orbit projectiles, calculate initial angle offset
+            let initialAngle = 0;
+            if (option.orbit && orbitCount > 1) {
+              // Distribute orbit projectiles evenly around the caster
+              initialAngle = (i / orbitCount) * Math.PI * 2;
+            }
+            
+            const proj = {
+              id: projId,
+              position: { x: caster.position.x, y: caster.position.y }, // Deep copy position
+              velocity: projDir,
+              speed: projSpeed,
+              radius: 0.3, // world units (increased from 0.15 for visibility)
+              // Projectile modifiers
+              homing: option.homing || null,
+              ricochet: option.ricochet || null,
+              spiral: option.spiral ? { ...option.spiral, angle: 0 } : null,
+              orbit: option.orbit ? { 
+                ...option.orbit, 
+                angle: initialAngle, // Set initial angle for orbit
+                createdAt: ctx.time 
+              } : null,
+              return: option.return ? { ...option.return, started: false } : null,
+              hover: option.hover ? { ...option.hover, active: false, lastTickAt: 0 } : null, // Hover effect
+              damage: caster.chargeEffect || option.formula, // Use charge effect if available
+              casterId: ctx.casterId,
+              createdAt: ctx.time,
+              initialPosition: { x: caster.position.x, y: caster.position.y }, // Store initial position for distance calculation
+              targets: targets.map((t) => t.id), // Remember intended targets for collision
+              assembly: ctx.assembly,
+            };
+            world.projectiles.push(proj);
+            console.log("Projectile spawned:", proj.id, "orbit:", proj.orbit, "initialAngle:", initialAngle);
+          }
           return;
         case "SpawnMultipleProjectiles":
           // Spawn multiple projectiles in a spread pattern
@@ -512,6 +536,13 @@ export function buildOp(slot, option) {
               velocity: { x: rotatedX, y: rotatedY },
               speed: baseSpeed,
               radius: option.radius || 0.3,
+              // Projectile modifiers (copy from option)
+              homing: option.homing || null,
+              ricochet: option.ricochet || null,
+              spiral: option.spiral ? { ...option.spiral, angle: 0 } : null,
+              orbit: option.orbit ? { ...option.orbit, angle: 0, createdAt: ctx.time } : null,
+              return: option.return ? { ...option.return, started: false } : null,
+              hover: option.hover ? { ...option.hover, active: false, lastTickAt: 0 } : null,
               damage: caster.chargeEffect || option.formula, // Use charge effect if available
               casterId: ctx.casterId,
               createdAt: ctx.time,
@@ -538,6 +569,13 @@ export function buildOp(slot, option) {
             velocity: { x: baseDir2.x, y: baseDir2.y },
             speed: burstSpeed,
             radius: option.radius || 0.3,
+            // Projectile modifiers (copy from option)
+            homing: option.homing || null,
+            ricochet: option.ricochet || null,
+            spiral: option.spiral ? { ...option.spiral, angle: 0 } : null,
+            orbit: option.orbit ? { ...option.orbit, angle: 0, createdAt: ctx.time } : null,
+            return: option.return ? { ...option.return, started: false } : null,
+            hover: option.hover ? { ...option.hover, active: false, lastTickAt: 0 } : null,
             damage: caster.chargeEffect || option.formula, // Use charge effect if available
             casterId: ctx.casterId,
             createdAt: ctx.time,
@@ -562,6 +600,13 @@ export function buildOp(slot, option) {
                   velocity: { x: baseDir2.x, y: baseDir2.y },
                   speed: burstSpeed,
                   radius: option.radius || 0.3,
+                  // Projectile modifiers (copy from option)
+                  homing: option.homing || null,
+                  ricochet: option.ricochet || null,
+                  spiral: option.spiral ? { ...option.spiral, angle: 0 } : null,
+                  orbit: option.orbit ? { ...option.orbit, angle: 0, createdAt: ctx.time + i * burstDelay } : null,
+                  return: option.return ? { ...option.return, started: false } : null,
+                  hover: option.hover ? { ...option.hover, active: false, lastTickAt: 0 } : null,
                   damage: caster2.chargeEffect || option.formula, // Use charge effect if available
                   casterId: ctx.casterId,
                   createdAt: ctx.time + i * burstDelay,
@@ -1366,6 +1411,8 @@ export function buildOp(slot, option) {
           }
           const durationMs = option.durationMs || 4000; // Default 4 seconds
           const tickIntervalMs = option.tickIntervalMs || 500; // Default 500ms per tick
+          // 确保tickFormula存在（支持组合系统的baseTickFormula）
+          const tickFormula = option.tickFormula || option.baseTickFormula || { scale: 0.2, flat: 7 };
           
           // Collect all debuffs from assembly that should be applied with this area effect
           // This includes debuffs from subsequent Action ops in the same assembly
@@ -1403,7 +1450,7 @@ export function buildOp(slot, option) {
             id: areaId,
             position: areaPos,
             radius: radius,
-            tickFormula: option.tickFormula,
+            tickFormula: tickFormula,
             casterId: ctx.casterId,
             createdAt: ctx.time,
             expiresAt: ctx.time + durationMs,
@@ -1424,7 +1471,7 @@ export function buildOp(slot, option) {
             return dist <= radius;
           });
           if (enemiesInArea.length > 0) {
-            applyDamage(world, enemiesInArea, caster, option.tickFormula);
+            applyDamage(world, enemiesInArea, caster, tickFormula);
             // Apply all debuffs
             for (const debuff of areaDebuffs) {
               applyDebuff(world, enemiesInArea, debuff, ctx.time, caster);
@@ -1460,18 +1507,25 @@ export function buildOp(slot, option) {
           return;
         case "Beam": {
           // Beam: create a persistent beam effect
+          // 安全检查
+          if (!caster || !caster.position) {
+            console.warn("Beam: caster or caster.position is missing");
+            return;
+          }
+          
           world.beams = world.beams || [];
           const beamId = `beam_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-          const beamLength = option.beamLength || 15;
-          const beamWidth = option.beamWidth || 1;
-          const beamDuration = option.beamDuration || 2000;
-          const tickInterval = option.tickInterval || 100;
-          const tickFormula = option.tickFormula || { scale: 0.4, flat: 15 };
-          const beamPierceCount = option.pierceCount || -1;
+          // 支持baseBeam*属性（组合系统）和beam*属性（传统系统）
+          const beamLength = option.beamLength || option.baseBeamLength || 15;
+          const beamWidth = option.beamWidth || option.baseBeamWidth || 1;
+          const beamDuration = option.beamDuration || option.baseBeamDuration || 2000;
+          const tickInterval = option.tickInterval || option.baseTickInterval || 100;
+          const tickFormula = option.tickFormula || option.baseTickFormula || { scale: 0.4, flat: 15 };
+          const beamPierceCount = option.pierceCount !== undefined ? option.pierceCount : -1;
           
           // Calculate beam direction: prioritize targets, then aimDir
           let beamDir = ctx.aimDir || { x: 1, y: 0 };
-          if (targets && targets.length > 0 && targets[0].position && caster.position) {
+          if (targets && Array.isArray(targets) && targets.length > 0 && targets[0] && targets[0].position && caster.position) {
             // Aim at first target
             const dx = targets[0].position.x - caster.position.x;
             const dy = targets[0].position.y - caster.position.y;
